@@ -1,5 +1,6 @@
 package com.example.petapp.ui
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.petapp.data.ApiClient
@@ -45,6 +46,7 @@ class MainViewModel : ViewModel() {
                     ?.message
                     ?.content
                     ?: "Ответ пуст"
+                Log.v("Response", content)
                 _uiState.value = UiState.Success(content)
             } catch (e: Exception) {
                 _uiState.value = UiState.Error("Ошибка: ${e.localizedMessage}")

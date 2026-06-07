@@ -76,6 +76,15 @@ class MainActivity : ComponentActivity() {
                             maxLines = 5
                         )
 
+                        // Кнопка очистки промпта
+                        TextButton(
+                            onClick = { prompt = "" },
+                            enabled = prompt.isNotEmpty(),
+                            modifier = Modifier.align(Alignment.End)
+                        ) {
+                            Text("Очистить запрос")
+                        }
+
                         Spacer(modifier = Modifier.height(8.dp))
 
                         // Max Tokens
@@ -120,7 +129,6 @@ class MainActivity : ComponentActivity() {
                         // Кнопка отправки
                         Button(
                             onClick = {
-                                // Парсим опциональные параметры
                                 val maxTokens = maxTokensText.toIntOrNull()
                                 val stop = stopText.trim().let { if (it.isNotEmpty()) listOf(it) else null }
                                 val temperature = temperatureText.toDoubleOrNull()
@@ -132,13 +140,21 @@ class MainActivity : ComponentActivity() {
                             Text(if (uiState is MainViewModel.UiState.Loading) "Загрузка..." else "Отправить")
                         }
 
+                        Spacer(modifier = Modifier.height(8.dp))
+
+// Кнопка очистки ответа (показывается всегда, но активна только когда есть что очищать)
+                        TextButton(
+                            onClick = { viewModel.resetState() },
+                            enabled = uiState is MainViewModel.UiState.Success || uiState is MainViewModel.UiState.Error
+                        ) {
+                            Text("Очистить ответ")
+                        }
+
                         Spacer(modifier = Modifier.height(16.dp))
 
-                        // Отображение результата
+// Отображение результата (без вложенных кнопок)
                         when (val state = uiState) {
-                            is MainViewModel.UiState.Idle -> {
-                                // Ничего не показываем, форма пустая
-                            }
+                            is MainViewModel.UiState.Idle -> { /* ничего не показываем */ }
                             is MainViewModel.UiState.Loading -> {
                                 CircularProgressIndicator(modifier = Modifier.padding(16.dp))
                             }
@@ -148,9 +164,6 @@ class MainActivity : ComponentActivity() {
                                     style = MaterialTheme.typography.bodyMedium,
                                     modifier = Modifier.padding(top = 8.dp)
                                 )
-                                TextButton(onClick = { viewModel.resetState() }) {
-                                    Text("Новый запрос")
-                                }
                             }
                             is MainViewModel.UiState.Error -> {
                                 Text(
@@ -158,9 +171,6 @@ class MainActivity : ComponentActivity() {
                                     color = MaterialTheme.colorScheme.error,
                                     modifier = Modifier.padding(top = 8.dp)
                                 )
-                                TextButton(onClick = { viewModel.resetState() }) {
-                                    Text("Попробовать снова")
-                                }
                             }
                         }
                     }
