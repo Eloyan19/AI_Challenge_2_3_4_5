@@ -14,13 +14,20 @@ import com.example.petapp.domain.usecase.LoadHistoryUseCase
 import com.example.petapp.domain.usecase.SaveTurnUseCase
 import com.google.gson.Gson
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
-    // ── Clean Architecture wiring (без DI-фреймворка) ──────────────────────
+    companion object {
+        const val CONTEXT_LIMIT = 128_000
+    }
+
+    // ── Clean Architecture wiring ──────────────────────────────────────────────
     private val repository = ChatRepositoryImpl(
         ChatDatabase.getInstance(application).chatMessageDao()
     )
@@ -28,24 +35,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val saveTurnUseCase     = SaveTurnUseCase(repository)
     private val clearHistoryUseCase = ClearHistoryUseCase(repository)
 
-    private val gson = Gson()
+    private val gson  = Gson()
     private val agent = SimpleAgent(ApiClient.service)
 
-    // ── UI state ────────────────────────────────────────────────────────────
+    // ── UI models ──────────────────────────────────────────────────────────────
 
     data class ChatTurn(
         val userMessage: String,
         val agentResponse: String,
         val tokenInfo: SimpleAgent.TokenInfo?,
         val cost: Double?,
-        val durationSec: Double?  // null у восстановленных из БД ходов
+        val durationSec: Double?
     )
+
+    data class SessionStats(
+        val turnCount: Int = 0,
+        val totalCompletionTokens: Int = 0,
+        val totalCachedTokens: Int = 0,
+        val totalCost: Double = 0.0,
+        /** Приближение размера следующего запроса = totalTokens последнего хода */
+        val contextTokens: Int = 0,
+        val contextLimit: Int = CONTEXT_LIMIT
+    ) {
+        val contextFraction: Float
+            get() = if (contextLimit > 0) contextTokens.toFloat() / contextLimit else 0f
+    }
 
     sealed class UiState {
         object Idle : UiState()
         data class Loading(val toolStatus: String? = null) : UiState()
-        data class Error(val message: String) : UiState()
+        data class Error(
+            val message: String,
+            val isContextOverflow: Boolean = false
+        ) : UiState()
     }
+
+    // ── State ──────────────────────────────────────────────────────────────────
 
     private val _uiState = MutableStateFlow<UiState>(UiState.Idle)
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
@@ -53,7 +78,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _chatHistory = MutableStateFlow<List<ChatTurn>>(emptyList())
     val chatHistory: StateFlow<List<ChatTurn>> = _chatHistory.asStateFlow()
 
-    // ── Инициализация: восстанавливаем историю из БД ───────────────────────
+    val sessionStats: StateFlow<SessionStats> = chatHistory
+        .map { turns ->
+            if (turns.isEmpty()) return@map SessionStats()
+            val last = turns.last()
+            SessionStats(
+                turnCount             = turns.size,
+                totalCompletionTokens = turns.sumOf { it.tokenInfo?.completionTokens ?: 0 },
+                totalCachedTokens     = turns.sumOf { it.tokenInfo?.cachedTokens     ?: 0 },
+                totalCost             = turns.sumOf { it.cost ?: 0.0 },
+                contextTokens         = last.tokenInfo?.totalTokens ?: 0
+            )
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SessionStats())
+
+    // ── Init: restore from DB ──────────────────────────────────────────────────
 
     init {
         viewModelScope.launch { restoreHistory() }
@@ -62,16 +101,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private suspend fun restoreHistory() {
         val saved = loadHistoryUseCase()
         if (saved.isEmpty()) return
-
-        // Восстанавливаем внутреннюю историю агента (для передачи в API)
         val agentMessages = saved.map { gson.fromJson(it.messageJson, Message::class.java) }
         agent.loadHistory(agentMessages)
-
-        // Восстанавливаем историю для UI
         _chatHistory.value = saved.toChatTurns()
     }
 
-    // ── Отправка сообщения ──────────────────────────────────────────────────
+    // ── Send message ───────────────────────────────────────────────────────────
 
     fun sendMessage(
         userInput: String,
@@ -83,11 +118,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     ) {
         agent.updateConfig(
             SimpleAgent.AgentConfig(
-                model = model,
-                maxTokens = maxTokens,
-                temperature = temperature,
-                thinkingEnabled = thinkingEnabled,
-                reasoningEffort = reasoningEffort
+                model            = model,
+                maxTokens        = maxTokens,
+                temperature      = temperature,
+                thinkingEnabled  = thinkingEnabled,
+                reasoningEffort  = reasoningEffort
             )
         )
         agent.onToolCall = { status -> _uiState.value = UiState.Loading(toolStatus = status) }
@@ -97,39 +132,38 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
             when (val result = agent.run(userInput)) {
                 is SimpleAgent.AgentResult.Success -> {
-                    // Сохраняем все сообщения хода в БД
                     saveTurnUseCase(result.turnMessages.toDomainMessages(result))
-
                     _chatHistory.value += ChatTurn(
-                        userMessage = userInput,
+                        userMessage   = userInput,
                         agentResponse = result.response,
-                        tokenInfo = result.tokenInfo,
-                        cost = result.cost,
-                        durationSec = result.durationSec
+                        tokenInfo     = result.tokenInfo,
+                        cost          = result.cost,
+                        durationSec   = result.durationSec
                     )
                     _uiState.value = UiState.Idle
                 }
                 is SimpleAgent.AgentResult.Failure -> {
-                    _uiState.value = UiState.Error(result.error)
+                    val isOverflow = sessionStats.value.contextFraction >= 0.90f
+                    _uiState.value = UiState.Error(result.error, isContextOverflow = isOverflow)
                 }
             }
         }
     }
 
-    // ── Новая сессия (кнопка «Новая сессия») ────────────────────────────────
+    // ── New session ────────────────────────────────────────────────────────────
 
     fun newSession() {
         viewModelScope.launch {
-            clearHistoryUseCase()   // очищаем БД
-            agent.reset()           // очищаем память агента
+            clearHistoryUseCase()
+            agent.reset()
             _chatHistory.value = emptyList()
-            _uiState.value = UiState.Idle
+            _uiState.value     = UiState.Idle
         }
     }
 
     fun dismissError() { _uiState.value = UiState.Idle }
 
-    // ── Маппинг Message → ChatMessage (domain) ──────────────────────────────
+    // ── Mapping: Message → ChatMessage (domain) ────────────────────────────────
 
     private fun List<Message>.toDomainMessages(
         result: SimpleAgent.AgentResult.Success
@@ -138,35 +172,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return mapIndexed { index, message ->
             val isLastAssistant = index == size - 1 && message.role == "assistant"
             ChatMessage(
-                turnId = turnId,
-                role = message.role,
-                messageJson = gson.toJson(message),
-                displayText = message.content,
-                promptTokens    = if (isLastAssistant) result.tokenInfo?.promptTokens    else null,
-                completionTokens= if (isLastAssistant) result.tokenInfo?.completionTokens else null,
-                totalTokens     = if (isLastAssistant) result.tokenInfo?.totalTokens      else null,
-                cachedTokens    = if (isLastAssistant) result.tokenInfo?.cachedTokens     else null,
-                cost            = if (isLastAssistant) result.cost        else null,
-                durationSec     = if (isLastAssistant) result.durationSec else null,
-                timestamp = System.currentTimeMillis() + index  // гарантируем порядок
+                turnId           = turnId,
+                role             = message.role,
+                messageJson      = gson.toJson(message),
+                displayText      = message.content,
+                promptTokens     = if (isLastAssistant) result.tokenInfo?.promptTokens     else null,
+                completionTokens = if (isLastAssistant) result.tokenInfo?.completionTokens else null,
+                totalTokens      = if (isLastAssistant) result.tokenInfo?.totalTokens      else null,
+                cachedTokens     = if (isLastAssistant) result.tokenInfo?.cachedTokens     else null,
+                cost             = if (isLastAssistant) result.cost        else null,
+                durationSec      = if (isLastAssistant) result.durationSec else null,
+                timestamp        = System.currentTimeMillis() + index
             )
         }
     }
 
-    // ── Маппинг ChatMessage → ChatTurn (для восстановления UI) ─────────────
+    // ── Mapping: ChatMessage → ChatTurn (UI restore) ───────────────────────────
 
     private fun List<ChatMessage>.toChatTurns(): List<ChatTurn> =
         groupBy { it.turnId }
             .values
             .sortedBy { group -> group.minOf { it.timestamp } }
             .mapNotNull { group ->
-                val userMsg      = group.find { it.role == "user" }      ?: return@mapNotNull null
+                val userMsg      = group.find     { it.role == "user"      } ?: return@mapNotNull null
                 val assistantMsg = group.findLast { it.role == "assistant" } ?: return@mapNotNull null
-
                 ChatTurn(
-                    userMessage  = userMsg.displayText      ?: return@mapNotNull null,
+                    userMessage   = userMsg.displayText      ?: return@mapNotNull null,
                     agentResponse = assistantMsg.displayText ?: return@mapNotNull null,
-                    tokenInfo = assistantMsg.totalTokens?.let {
+                    tokenInfo     = assistantMsg.totalTokens?.let {
                         SimpleAgent.TokenInfo(
                             promptTokens     = assistantMsg.promptTokens     ?: 0,
                             completionTokens = assistantMsg.completionTokens ?: 0,
@@ -174,7 +207,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             cachedTokens     = assistantMsg.cachedTokens     ?: 0
                         )
                     },
-                    cost       = assistantMsg.cost,
+                    cost        = assistantMsg.cost,
                     durationSec = assistantMsg.durationSec
                 )
             }
