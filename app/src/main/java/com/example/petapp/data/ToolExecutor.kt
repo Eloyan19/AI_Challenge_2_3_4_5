@@ -13,7 +13,6 @@ import java.util.concurrent.TimeUnit
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import retrofit2.http.GET
-import retrofit2.http.Path
 import retrofit2.http.Query
 
 class ToolExecutor(
@@ -22,15 +21,6 @@ class ToolExecutor(
 ) {
 
     // ── Retrofit interfaces ───────────────────────────────────────────────────
-
-    private interface WttrApi {
-        @GET("{city}")
-        suspend fun getWeather(
-            @Path("city")    city:   String,
-            @Query("format") format: String = "j1",
-            @Query("lang")   lang:   String = "ru"
-        ): WttrResponse
-    }
 
     private interface CurrencyApi {
         @GET("latest")
@@ -43,18 +33,6 @@ class ToolExecutor(
 
     // ── Response models ───────────────────────────────────────────────────────
 
-    private data class WttrResponse(
-        @SerializedName("current_condition") val currentCondition: List<WttrCondition>?
-    )
-    private data class WttrCondition(
-        @SerializedName("temp_C")        val tempC:        String?,
-        @SerializedName("FeelsLikeC")    val feelsLikeC:   String?,
-        val humidity:                                       String?,
-        @SerializedName("windspeedKmph") val windspeedKmph: String?,
-        @SerializedName("weatherDesc")   val weatherDesc:  List<WttrDesc>?
-    )
-    private data class WttrDesc(val value: String?)
-
     private data class CurrencyResponse(
         val date: String,
         val rates: Map<String, Double>
@@ -62,10 +40,6 @@ class ToolExecutor(
 
     // ── Service instances ─────────────────────────────────────────────────────
 
-    private val wttrApi = buildClient<WttrApi>(
-        "https://wttr.in/",
-        WttrApi::class.java
-    )
     private val currencyApi = buildClient<CurrencyApi>(
         "https://api.frankfurter.app/",
         CurrencyApi::class.java
@@ -98,13 +72,21 @@ class ToolExecutor(
 
     private suspend fun getWeather(args: JsonObject): String {
         val city = args.get("city").asString
-        val resp = wttrApi.getWeather(city)
-        val cond = resp.currentCondition?.firstOrNull()
-            ?: return "Данные о погоде для '$city' недоступны"
-        val desc = cond.weatherDesc?.firstOrNull()?.value ?: "неизвестно"
-        return "Погода в $city: $desc, " +
-               "температура ${cond.tempC}°C (ощущается как ${cond.feelsLikeC}°C), " +
-               "влажность ${cond.humidity}%, ветер ${cond.windspeedKmph} км/ч"
+        val encodedCity = java.net.URLEncoder.encode(city, "UTF-8")
+        // Компактный формат: ~80 байт вместо сотен KB от format=j1
+        val url = "https://wttr.in/$encodedCity?format=%C|%t|%f|%h|%w&lang=ru"
+
+        val raw = withContext(Dispatchers.IO) {
+            httpClient.newCall(Request.Builder().url(url).build()).execute().use { resp ->
+                if (!resp.isSuccessful) null else resp.body?.string()?.trim()
+            }
+        } ?: return "Данные о погоде для '$city' недоступны"
+
+        val parts = raw.split("|")
+        if (parts.size < 5) return "Данные о погоде для '$city' недоступны"
+        val (condition, temp, feelsLike, humidity, wind) = parts
+        return "Погода в $city: $condition, температура $temp (ощущается как $feelsLike), " +
+               "влажность $humidity, ветер $wind"
     }
 
     private suspend fun convertCurrency(args: JsonObject): String {
