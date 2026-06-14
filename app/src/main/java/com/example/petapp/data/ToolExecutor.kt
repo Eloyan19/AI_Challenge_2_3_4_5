@@ -16,54 +16,54 @@ import retrofit2.http.Query
 
 class ToolExecutor(
     private val yandexUser: String,
-    private val yandexKey: String
+    private val yandexKey: String,
+    private val yandexWeatherKey: String
 ) {
 
     // ── Retrofit interfaces ───────────────────────────────────────────────────
 
-    private interface GeocodingApi {
-        @GET("v1/search")
+    private interface NominatimApi {
+        @GET("search")
         suspend fun search(
-            @Query("name") name: String,
-            @Query("count") count: Int = 1
-        ): GeocodingResponse
+            @Query("q")      query:  String,
+            @Query("format") format: String = "json",
+            @Query("limit")  limit:  Int    = 1
+        ): List<NominatimResult>
     }
 
-    private interface WeatherApi {
-        @GET("v1/forecast")
-        suspend fun forecast(
-            @Query("latitude") lat: Double,
-            @Query("longitude") lon: Double,
-            @Query("current") current: String =
-                "temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code"
-        ): WeatherResponse
+    private interface YandexWeatherApi {
+        @GET("v2/informers")
+        suspend fun get(
+            @Query("lat")  lat:  Double,
+            @Query("lon")  lon:  Double,
+            @Query("lang") lang: String = "ru_RU"
+        ): YandexWeatherResponse
     }
 
     private interface CurrencyApi {
         @GET("latest")
         suspend fun convert(
             @Query("amount") amount: Double,
-            @Query("from") from: String,
-            @Query("to") to: String
+            @Query("from")   from:   String,
+            @Query("to")     to:     String
         ): CurrencyResponse
     }
 
     // ── Response models ───────────────────────────────────────────────────────
 
-    private data class GeocodingResponse(val results: List<GeoLocation>?)
-    private data class GeoLocation(
-        val name: String,
-        val latitude: Double,
-        val longitude: Double,
-        val country: String?
+    private data class NominatimResult(
+        val lat: String,
+        val lon: String,
+        @SerializedName("display_name") val displayName: String
     )
 
-    private data class WeatherResponse(val current: CurrentWeather?)
-    private data class CurrentWeather(
-        @SerializedName("temperature_2m") val temperature: Double?,
-        @SerializedName("relative_humidity_2m") val humidity: Int?,
-        @SerializedName("wind_speed_10m") val windSpeed: Double?,
-        @SerializedName("weather_code") val weatherCode: Int?
+    private data class YandexWeatherResponse(val fact: WeatherFact?)
+    private data class WeatherFact(
+        val temp: Int?,
+        @SerializedName("feels_like")  val feelsLike:  Int?,
+        val condition: String?,
+        @SerializedName("wind_speed")  val windSpeed:  Double?,
+        val humidity: Int?
     )
 
     private data class CurrencyResponse(
@@ -73,13 +73,15 @@ class ToolExecutor(
 
     // ── Service instances ─────────────────────────────────────────────────────
 
-    private val geocodingApi = buildClient<GeocodingApi>(
-        "https://geocoding-api.open-meteo.com/",
-        GeocodingApi::class.java
+    private val nominatimApi = buildClient<NominatimApi>(
+        "https://nominatim.openstreetmap.org/",
+        NominatimApi::class.java,
+        headers = mapOf("User-Agent" to "PetApp/1.0")
     )
-    private val weatherApi = buildClient<WeatherApi>(
-        "https://api.open-meteo.com/",
-        WeatherApi::class.java
+    private val yandexWeatherApi = buildClient<YandexWeatherApi>(
+        "https://api.weather.yandex.ru/",
+        YandexWeatherApi::class.java,
+        headers = mapOf("X-Yandex-Weather-Key" to yandexWeatherKey)
     )
     private val currencyApi = buildClient<CurrencyApi>(
         "https://api.frankfurter.app/",
@@ -109,24 +111,32 @@ class ToolExecutor(
     // ── Tool implementations ──────────────────────────────────────────────────
 
     private suspend fun getWeather(args: JsonObject): String {
+        if (yandexWeatherKey.isBlank()) {
+            return "Погода недоступна: добавь YANDEX_WEATHER_KEY в local.properties. " +
+                   "Ключ: https://developer.tech.yandex.ru/services/38"
+        }
         val city = args.get("city").asString
-        val geo = geocodingApi.search(city)
-        val loc = geo.results?.firstOrNull() ?: return "Город '$city' не найден"
 
-        val weather = weatherApi.forecast(loc.latitude, loc.longitude)
-        val cur = weather.current ?: return "Данные о погоде недоступны"
+        val geoResults = nominatimApi.search(city)
+        val geo = geoResults.firstOrNull() ?: return "Город '$city' не найден"
+        val lat = geo.lat.toDoubleOrNull() ?: return "Не удалось определить координаты '$city'"
+        val lon = geo.lon.toDoubleOrNull() ?: return "Не удалось определить координаты '$city'"
 
-        return "Погода в ${loc.name} (${loc.country}): ${weatherDesc(cur.weatherCode ?: 0)}, " +
-               "температура ${cur.temperature}°C, влажность ${cur.humidity}%, " +
-               "ветер ${cur.windSpeed} км/ч"
+        val weather = yandexWeatherApi.get(lat, lon)
+        val fact = weather.fact ?: return "Данные о погоде недоступны"
+
+        val cityName = geo.displayName.split(",").firstOrNull()?.trim() ?: city
+        return "Погода в $cityName: ${conditionDesc(fact.condition)}, " +
+               "температура ${fact.temp}°C (ощущается как ${fact.feelsLike}°C), " +
+               "влажность ${fact.humidity}%, ветер ${fact.windSpeed} м/с"
     }
 
     private suspend fun convertCurrency(args: JsonObject): String {
         val amount = args.get("amount").asDouble
-        val from = args.get("from").asString.uppercase()
-        val to = args.get("to").asString.uppercase()
+        val from   = args.get("from").asString.uppercase()
+        val to     = args.get("to").asString.uppercase()
 
-        val resp = currencyApi.convert(amount, from, to)
+        val resp   = currencyApi.convert(amount, from, to)
         val result = resp.rates[to] ?: return "Не удалось получить курс $from → $to"
         return "$amount $from = ${"%.2f".format(result)} $to (курс на ${resp.date})"
     }
@@ -167,11 +177,11 @@ class ToolExecutor(
 
         data class Result(val url: String, val title: String, val snippet: String)
 
-        val results = mutableListOf<Result>()
-        val docRe      = Regex("<doc[^>]*>(.*?)</doc>",         RegexOption.DOT_MATCHES_ALL)
-        val urlRe      = Regex("<url>(.*?)</url>",               RegexOption.DOT_MATCHES_ALL)
-        val titleRe    = Regex("<title>(.*?)</title>",           RegexOption.DOT_MATCHES_ALL)
-        val headlineRe = Regex("<headline>(.*?)</headline>",     RegexOption.DOT_MATCHES_ALL)
+        val results    = mutableListOf<Result>()
+        val docRe      = Regex("<doc[^>]*>(.*?)</doc>",     RegexOption.DOT_MATCHES_ALL)
+        val urlRe      = Regex("<url>(.*?)</url>",           RegexOption.DOT_MATCHES_ALL)
+        val titleRe    = Regex("<title>(.*?)</title>",       RegexOption.DOT_MATCHES_ALL)
+        val headlineRe = Regex("<headline>(.*?)</headline>", RegexOption.DOT_MATCHES_ALL)
 
         for (docMatch in docRe.findAll(xml)) {
             val body    = docMatch.groupValues[1]
@@ -182,23 +192,32 @@ class ToolExecutor(
         }
 
         if (results.isEmpty()) return "Ничего не найдено по запросу: $query"
-        return results.take(3).joinToString("\n\n") { r ->
-            "${r.title}\n${r.snippet}\n${r.url}"
-        }
+        return results.take(3).joinToString("\n\n") { r -> "${r.title}\n${r.snippet}\n${r.url}" }
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    private fun weatherDesc(code: Int) = when (code) {
-        0         -> "ясно"
-        in 1..3   -> "переменная облачность"
-        in 45..48 -> "туман"
-        in 51..55 -> "морось"
-        in 61..65 -> "дождь"
-        in 71..75 -> "снег"
-        in 80..82 -> "ливень"
-        in 95..99 -> "гроза"
-        else      -> "облачно"
+    private fun conditionDesc(condition: String?) = when (condition) {
+        "clear"                   -> "ясно"
+        "partly-cloudy"           -> "переменная облачность"
+        "cloudy"                  -> "облачно с прояснениями"
+        "overcast"                -> "пасмурно"
+        "drizzle"                 -> "морось"
+        "light-rain"              -> "небольшой дождь"
+        "rain"                    -> "дождь"
+        "moderate-rain"           -> "умеренный дождь"
+        "heavy-rain"              -> "сильный дождь"
+        "continuous-heavy-rain"   -> "длительный сильный дождь"
+        "showers"                 -> "ливень"
+        "wet-snow"                -> "дождь со снегом"
+        "light-snow"              -> "небольшой снег"
+        "snow"                    -> "снег"
+        "snow-showers"            -> "снегопад"
+        "hail"                    -> "град"
+        "thunderstorm"            -> "гроза"
+        "thunderstorm-with-rain"  -> "дождь с грозой"
+        "thunderstorm-with-hail"  -> "гроза с градом"
+        else                      -> condition ?: "неизвестно"
     }
 
     private fun <T> buildClient(

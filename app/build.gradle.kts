@@ -14,9 +14,10 @@ val localPropertiesFile = rootProject.file("local.properties")
 if (localPropertiesFile.exists()) {
     localProperties.load(localPropertiesFile.inputStream())
 }
-val deepseekApiKey = localProperties.getProperty("DEEPSEEK_API_KEY") ?: ""
+val deepseekApiKey   = localProperties.getProperty("DEEPSEEK_API_KEY")   ?: ""
 val yandexSearchUser = localProperties.getProperty("YANDEX_SEARCH_USER") ?: ""
 val yandexSearchKey  = localProperties.getProperty("YANDEX_SEARCH_KEY")  ?: ""
+val yandexWeatherKey = localProperties.getProperty("YANDEX_WEATHER_KEY") ?: ""
 
 android {
     namespace = "com.example.petapp"
@@ -37,6 +38,7 @@ android {
         buildConfigField("String", "DEEPSEEK_API_KEY",     "\"$deepseekApiKey\"")
         buildConfigField("String", "YANDEX_SEARCH_USER",  "\"$yandexSearchUser\"")
         buildConfigField("String", "YANDEX_SEARCH_KEY",   "\"$yandexSearchKey\"")
+        buildConfigField("String", "YANDEX_WEATHER_KEY",  "\"$yandexWeatherKey\"")
     }
 
     buildTypes {
