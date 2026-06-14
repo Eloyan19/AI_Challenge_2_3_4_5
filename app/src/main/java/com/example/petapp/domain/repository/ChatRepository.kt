@@ -6,4 +6,8 @@ interface ChatRepository {
     suspend fun getAllMessages(): List<ChatMessage>
     suspend fun saveMessages(messages: List<ChatMessage>)
     suspend fun clearAll()
+
+    suspend fun getSummary(): String?
+    suspend fun saveSummary(content: String)
+    suspend fun clearSummary()
 }

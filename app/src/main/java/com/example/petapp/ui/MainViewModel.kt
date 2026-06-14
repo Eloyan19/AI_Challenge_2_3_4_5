@@ -10,7 +10,10 @@ import com.example.petapp.data.local.ChatDatabase
 import com.example.petapp.data.repository.ChatRepositoryImpl
 import com.example.petapp.domain.model.ChatMessage
 import com.example.petapp.domain.usecase.ClearHistoryUseCase
+import com.example.petapp.domain.usecase.ClearSummaryUseCase
+import com.example.petapp.domain.usecase.GetSummaryUseCase
 import com.example.petapp.domain.usecase.LoadHistoryUseCase
+import com.example.petapp.domain.usecase.SaveSummaryUseCase
 import com.example.petapp.domain.usecase.SaveTurnUseCase
 import com.google.gson.Gson
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -24,16 +27,20 @@ import kotlinx.coroutines.launch
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     companion object {
-        const val CONTEXT_LIMIT = 128_000
+        const val CONTEXT_LIMIT     = 128_000
+        const val DEFAULT_KEEP_LAST = 10
     }
 
     // ── Clean Architecture wiring ──────────────────────────────────────────────
-    private val repository = ChatRepositoryImpl(
-        ChatDatabase.getInstance(application).chatMessageDao()
-    )
+    private val db = ChatDatabase.getInstance(application)
+    private val repository = ChatRepositoryImpl(db.chatMessageDao(), db.summaryDao())
+
     private val loadHistoryUseCase  = LoadHistoryUseCase(repository)
     private val saveTurnUseCase     = SaveTurnUseCase(repository)
     private val clearHistoryUseCase = ClearHistoryUseCase(repository)
+    private val getSummaryUseCase   = GetSummaryUseCase(repository)
+    private val saveSummaryUseCase  = SaveSummaryUseCase(repository)
+    private val clearSummaryUseCase = ClearSummaryUseCase(repository)
 
     private val gson  = Gson()
     private val agent = SimpleAgent(ApiClient.service)
@@ -53,7 +60,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val totalCompletionTokens: Int = 0,
         val totalCachedTokens: Int = 0,
         val totalCost: Double = 0.0,
-        /** Приближение размера следующего запроса = totalTokens последнего хода */
         val contextTokens: Int = 0,
         val contextLimit: Int = CONTEXT_LIMIT
     ) {
@@ -72,7 +78,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // ── State ──────────────────────────────────────────────────────────────────
 
-    private val _uiState = MutableStateFlow<UiState>(UiState.Idle)
+    private val _uiState     = MutableStateFlow<UiState>(UiState.Idle)
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
 
     private val _chatHistory = MutableStateFlow<List<ChatTurn>>(emptyList())
@@ -92,10 +98,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SessionStats())
 
-    // ── Init: restore from DB ──────────────────────────────────────────────────
+    // Compression settings
+    private val _compressionEnabled = MutableStateFlow(false)
+    val compressionEnabled: StateFlow<Boolean> = _compressionEnabled.asStateFlow()
+
+    private val _keepLastN = MutableStateFlow(DEFAULT_KEEP_LAST)
+    val keepLastN: StateFlow<Int> = _keepLastN.asStateFlow()
+
+    private val _currentSummary = MutableStateFlow<String?>(null)
+    val currentSummary: StateFlow<String?> = _currentSummary.asStateFlow()
+
+    // ── Init ───────────────────────────────────────────────────────────────────
 
     init {
-        viewModelScope.launch { restoreHistory() }
+        // Подписываемся на обновления summary из компрессора
+        agent.onSummaryUpdated = { newSummary ->
+            _currentSummary.value = newSummary
+            viewModelScope.launch {
+                if (newSummary != null) saveSummaryUseCase(newSummary)
+                else clearSummaryUseCase()
+            }
+        }
+
+        viewModelScope.launch {
+            // Сначала восстанавливаем summary, затем историю
+            val savedSummary = getSummaryUseCase()
+            if (savedSummary != null) {
+                agent.loadSummary(savedSummary)
+                _currentSummary.value = savedSummary
+            }
+            restoreHistory()
+        }
     }
 
     private suspend fun restoreHistory() {
@@ -104,6 +137,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val agentMessages = saved.map { gson.fromJson(it.messageJson, Message::class.java) }
         agent.loadHistory(agentMessages)
         _chatHistory.value = saved.toChatTurns()
+    }
+
+    // ── Compression controls ───────────────────────────────────────────────────
+
+    fun setCompressionEnabled(enabled: Boolean) {
+        _compressionEnabled.value = enabled
+        agent.setCompressionConfig(enabled, _keepLastN.value)
+    }
+
+    fun setKeepLastN(n: Int) {
+        _keepLastN.value = n
+        agent.setCompressionConfig(_compressionEnabled.value, n)
     }
 
     // ── Send message ───────────────────────────────────────────────────────────
@@ -118,11 +163,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     ) {
         agent.updateConfig(
             SimpleAgent.AgentConfig(
-                model            = model,
-                maxTokens        = maxTokens,
-                temperature      = temperature,
-                thinkingEnabled  = thinkingEnabled,
-                reasoningEffort  = reasoningEffort
+                model           = model,
+                maxTokens       = maxTokens,
+                temperature     = temperature,
+                thinkingEnabled = thinkingEnabled,
+                reasoningEffort = reasoningEffort
             )
         )
         agent.onToolCall = { status -> _uiState.value = UiState.Loading(toolStatus = status) }
@@ -155,15 +200,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun newSession() {
         viewModelScope.launch {
             clearHistoryUseCase()
+            clearSummaryUseCase()
             agent.reset()
-            _chatHistory.value = emptyList()
-            _uiState.value     = UiState.Idle
+            _chatHistory.value  = emptyList()
+            _currentSummary.value = null
+            _uiState.value      = UiState.Idle
         }
     }
 
     fun dismissError() { _uiState.value = UiState.Idle }
 
-    // ── Mapping: Message → ChatMessage (domain) ────────────────────────────────
+    // ── Mapping helpers ────────────────────────────────────────────────────────
 
     private fun List<Message>.toDomainMessages(
         result: SimpleAgent.AgentResult.Success
@@ -186,8 +233,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
     }
-
-    // ── Mapping: ChatMessage → ChatTurn (UI restore) ───────────────────────────
 
     private fun List<ChatMessage>.toChatTurns(): List<ChatTurn> =
         groupBy { it.turnId }

@@ -25,7 +25,7 @@ class SimpleAgent(
     sealed class AgentResult {
         data class Success(
             val response: String,
-            val turnMessages: List<Message>, // все сообщения этого хода для сохранения
+            val turnMessages: List<Message>,
             val tokenInfo: TokenInfo?,
             val cost: Double?,
             val durationSec: Double
@@ -36,8 +36,16 @@ class SimpleAgent(
     private var config: AgentConfig = initialConfig
     private val history = mutableListOf<Message>()
     private val toolExecutor = ToolExecutor(BuildConfig.YANDEX_SEARCH_USER, BuildConfig.YANDEX_SEARCH_KEY)
+    private val contextCompressor = ContextCompressor(apiService)
 
     var onToolCall: ((String) -> Unit)? = null
+
+    // Делегирующие свойства для ViewModel
+    var onSummaryUpdated: ((String?) -> Unit)?
+        get() = contextCompressor.onSummaryUpdated
+        set(v) { contextCompressor.onSummaryUpdated = v }
+
+    val currentSummary: String? get() = contextCompressor.summary
 
     companion object {
         private const val MAX_TOOL_ITERATIONS = 5
@@ -45,28 +53,41 @@ class SimpleAgent(
 
     fun updateConfig(newConfig: AgentConfig) { config = newConfig }
 
-    // Восстановление истории из БД при запуске
+    fun setCompressionConfig(enabled: Boolean, keepLastN: Int) {
+        contextCompressor.enabled = enabled
+        contextCompressor.keepLastN = keepLastN
+    }
+
     fun loadHistory(messages: List<Message>) {
         history.clear()
         history.addAll(messages)
         Log.d("SimpleAgent", "History restored: ${history.size} messages")
     }
 
+    fun loadSummary(summary: String?) {
+        contextCompressor.summary = summary
+    }
+
     suspend fun run(userInput: String): AgentResult {
-        val turnStartIndex = history.size
         history.add(Message(role = "user", content = userInput))
-        Log.d("SimpleAgent", "run() — context: ${history.size} messages")
+
+        // Перед запросом сжимаем старые сообщения (если включено)
+        if (contextCompressor.enabled) {
+            contextCompressor.prepareContext(history)
+        }
+
+        // После возможного сжатия user-сообщение всегда в конце списка
+        val turnStartIndex = history.lastIndex
+        Log.d("SimpleAgent", "run() — ${history.size} messages, compression=${contextCompressor.enabled}")
 
         return try {
             agentLoop(turnStartIndex)
         } catch (e: Exception) {
-            // Откатываем историю если произошла ошибка
             while (history.size > turnStartIndex) history.removeLastOrNull()
             AgentResult.Failure("Ошибка: ${e.localizedMessage}")
         }
     }
 
-    // LLM → tool call? → execute → LLM → ... → финальный ответ
     private suspend fun agentLoop(turnStartIndex: Int): AgentResult {
         val startTime = System.currentTimeMillis()
 
@@ -75,10 +96,8 @@ class SimpleAgent(
             val choice = response.choices?.firstOrNull()
 
             if (choice?.finishReason == "tool_calls") {
-                val message = choice.message
-                    ?: return AgentResult.Failure("Пустой ответ с tool_calls")
-                val toolCalls = message.toolCalls
-                    ?: return AgentResult.Failure("Нет tool_calls в сообщении")
+                val message  = choice.message  ?: return AgentResult.Failure("Пустой ответ с tool_calls")
+                val toolCalls = message.toolCalls ?: return AgentResult.Failure("Нет tool_calls в сообщении")
 
                 history.add(message)
 
@@ -86,7 +105,6 @@ class SimpleAgent(
                     val toolName = toolCall.function.name
                     Log.d("SimpleAgent", "Tool: $toolName args=${toolCall.function.arguments}")
                     onToolCall?.invoke(toolDisplayName(toolName))
-
                     val result = toolExecutor.execute(toolCall)
                     history.add(Message(role = "tool", content = result, toolCallId = toolCall.id, name = toolName))
                 }
@@ -101,11 +119,11 @@ class SimpleAgent(
                 }
 
                 return AgentResult.Success(
-                    response = content,
+                    response     = content,
                     turnMessages = history.subList(turnStartIndex, history.size).toList(),
-                    tokenInfo = tokenInfo,
-                    cost = tokenInfo?.let { calculateCost(it) },
-                    durationSec = durationSec
+                    tokenInfo    = tokenInfo,
+                    cost         = tokenInfo?.let { calculateCost(it) },
+                    durationSec  = durationSec
                 )
             }
         }
@@ -114,14 +132,14 @@ class SimpleAgent(
     }
 
     private fun buildRequest() = ChatRequest(
-        model = config.model,
-        messages = history.toList(),
-        maxTokens = config.maxTokens,
+        model    = config.model,
+        messages = contextCompressor.buildMessages(history),
+        maxTokens   = config.maxTokens,
         temperature = if (config.thinkingEnabled) null else config.temperature,
-        thinking = if (config.thinkingEnabled) Thinking("enabled") else null,
+        thinking    = if (config.thinkingEnabled) Thinking("enabled") else null,
         reasoningEffort = if (config.thinkingEnabled && !config.reasoningEffort.isNullOrBlank())
             config.reasoningEffort else null,
-        tools = if (!config.thinkingEnabled) ToolDefinitions.allTools else null,
+        tools      = if (!config.thinkingEnabled) ToolDefinitions.allTools else null,
         toolChoice = if (!config.thinkingEnabled) "auto" else null
     )
 
@@ -144,5 +162,8 @@ class SimpleAgent(
                (tokens.completionTokens / 1_000_000.0) * output
     }
 
-    fun reset() = history.clear()
+    fun reset() {
+        history.clear()
+        contextCompressor.reset()
+    }
 }

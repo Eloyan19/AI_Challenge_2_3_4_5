@@ -57,20 +57,19 @@ import com.example.petapp.ui.theme.PetAppTheme
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent {
-            PetAppTheme {
-                AgentChatScreen()
-            }
-        }
+        setContent { PetAppTheme { AgentChatScreen() } }
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AgentChatScreen(viewModel: MainViewModel = viewModel()) {
-    val uiState      by viewModel.uiState.collectAsStateWithLifecycle()
-    val chatHistory  by viewModel.chatHistory.collectAsStateWithLifecycle()
-    val sessionStats by viewModel.sessionStats.collectAsStateWithLifecycle()
+    val uiState            by viewModel.uiState.collectAsStateWithLifecycle()
+    val chatHistory        by viewModel.chatHistory.collectAsStateWithLifecycle()
+    val sessionStats       by viewModel.sessionStats.collectAsStateWithLifecycle()
+    val compressionEnabled by viewModel.compressionEnabled.collectAsStateWithLifecycle()
+    val keepLastN          by viewModel.keepLastN.collectAsStateWithLifecycle()
+    val currentSummary     by viewModel.currentSummary.collectAsStateWithLifecycle()
     val listState = rememberLazyListState()
 
     var prompt           by remember { mutableStateOf("") }
@@ -80,6 +79,7 @@ fun AgentChatScreen(viewModel: MainViewModel = viewModel()) {
     var maxTokensText    by remember { mutableStateOf("") }
     var temperatureText  by remember { mutableStateOf("") }
     var advancedExpanded by remember { mutableStateOf(false) }
+    var keepLastNText    by remember { mutableStateOf(keepLastN.toString()) }
 
     val isLoading  = uiState is MainViewModel.UiState.Loading
     val toolStatus = (uiState as? MainViewModel.UiState.Loading)?.toolStatus
@@ -93,9 +93,7 @@ fun AgentChatScreen(viewModel: MainViewModel = viewModel()) {
             TopAppBar(
                 title = { Text("AI Agent") },
                 actions = {
-                    TextButton(onClick = { viewModel.newSession() }) {
-                        Text("Новая сессия")
-                    }
+                    TextButton(onClick = { viewModel.newSession() }) { Text("Новая сессия") }
                 }
             )
         }
@@ -112,17 +110,14 @@ fun AgentChatScreen(viewModel: MainViewModel = viewModel()) {
                     .padding(horizontal = 16.dp, vertical = 8.dp)
             ) {
                 ModelDropdown(
-                    models   = listOf("deepseek-v4-flash", "deepseek-v4-pro"),
-                    selected = selectedModel,
+                    models     = listOf("deepseek-v4-flash", "deepseek-v4-pro"),
+                    selected   = selectedModel,
                     onSelected = { selectedModel = it }
                 )
 
                 Spacer(Modifier.height(8.dp))
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
+                Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Text("Thinking Mode", modifier = Modifier.weight(1f))
                     Switch(checked = thinkingEnabled, onCheckedChange = { thinkingEnabled = it })
                 }
@@ -137,8 +132,8 @@ fun AgentChatScreen(viewModel: MainViewModel = viewModel()) {
                 }
 
                 TextButton(
-                    onClick = { advancedExpanded = !advancedExpanded },
-                    modifier = Modifier.align(Alignment.Start),
+                    onClick        = { advancedExpanded = !advancedExpanded },
+                    modifier       = Modifier.align(Alignment.Start),
                     contentPadding = PaddingValues(0.dp)
                 ) {
                     Text(
@@ -149,24 +144,71 @@ fun AgentChatScreen(viewModel: MainViewModel = viewModel()) {
 
                 if (advancedExpanded) {
                     OutlinedTextField(
-                        value         = maxTokensText,
-                        onValueChange = { maxTokensText = it },
-                        label         = { Text("Max Tokens") },
-                        modifier      = Modifier.fillMaxWidth(),
+                        value           = maxTokensText,
+                        onValueChange   = { maxTokensText = it },
+                        label           = { Text("Max Tokens") },
+                        modifier        = Modifier.fillMaxWidth(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        singleLine    = true
+                        singleLine      = true
                     )
                     if (!thinkingEnabled) {
                         Spacer(Modifier.height(8.dp))
                         OutlinedTextField(
-                            value         = temperatureText,
-                            onValueChange = { temperatureText = it },
-                            label         = { Text("Temperature") },
-                            modifier      = Modifier.fillMaxWidth(),
+                            value           = temperatureText,
+                            onValueChange   = { temperatureText = it },
+                            label           = { Text("Temperature") },
+                            modifier        = Modifier.fillMaxWidth(),
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                            singleLine    = true
+                            singleLine      = true
                         )
                     }
+
+                    Spacer(Modifier.height(8.dp))
+                    HorizontalDivider()
+                    Spacer(Modifier.height(8.dp))
+
+                    // ── Compression settings ─────────────────────────────────
+                    Row(
+                        modifier          = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Сжатие контекста", style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                text  = "Старые сообщения заменяются summary",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                            )
+                        }
+                        Switch(
+                            checked         = compressionEnabled,
+                            onCheckedChange = { viewModel.setCompressionEnabled(it) }
+                        )
+                    }
+
+                    if (compressionEnabled) {
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value         = keepLastNText,
+                            onValueChange = { text ->
+                                keepLastNText = text
+                                text.toIntOrNull()
+                                    ?.coerceIn(2, 100)
+                                    ?.let { viewModel.setKeepLastN(it) }
+                            },
+                            label           = { Text("Хранить последних N сообщений") },
+                            modifier        = Modifier.fillMaxWidth(),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            singleLine      = true,
+                            supportingText  = {
+                                Text(
+                                    "Рекомендуется 6–20. При превышении старые сообщения → summary",
+                                    style = MaterialTheme.typography.labelSmall
+                                )
+                            }
+                        )
+                    }
+
                     Spacer(Modifier.height(8.dp))
                 }
             }
@@ -175,11 +217,9 @@ fun AgentChatScreen(viewModel: MainViewModel = viewModel()) {
 
             // ── Chat history ────────────────────────────────────────────────
             LazyColumn(
-                state           = listState,
-                modifier        = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
-                contentPadding  = PaddingValues(16.dp),
+                state               = listState,
+                modifier            = Modifier.weight(1f).fillMaxWidth(),
+                contentPadding      = PaddingValues(16.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 items(chatHistory) { turn -> ChatTurnItem(turn) }
@@ -187,9 +227,9 @@ fun AgentChatScreen(viewModel: MainViewModel = viewModel()) {
                 if (isLoading) {
                     item {
                         Row(
-                            modifier            = Modifier.fillMaxWidth(),
+                            modifier              = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.Start,
-                            verticalAlignment   = Alignment.CenterVertically
+                            verticalAlignment     = Alignment.CenterVertically
                         ) {
                             CircularProgressIndicator(modifier = Modifier.size(24.dp))
                             if (toolStatus != null) {
@@ -206,14 +246,19 @@ fun AgentChatScreen(viewModel: MainViewModel = viewModel()) {
             }
 
             // ── Session stats + context bar ─────────────────────────────────
-            ContextHeader(stats = sessionStats)
+            ContextHeader(
+                stats              = sessionStats,
+                compressionEnabled = compressionEnabled,
+                keepLastN          = keepLastN,
+                summary            = currentSummary
+            )
 
             // ── Error banner ────────────────────────────────────────────────
             if (uiState is MainViewModel.UiState.Error) {
                 val err = uiState as MainViewModel.UiState.Error
                 Surface(color = MaterialTheme.colorScheme.errorContainer) {
                     Row(
-                        modifier = Modifier
+                        modifier          = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 16.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically
@@ -241,9 +286,7 @@ fun AgentChatScreen(viewModel: MainViewModel = viewModel()) {
             // ── Input ───────────────────────────────────────────────────────
             HorizontalDivider()
             Row(
-                modifier          = Modifier
-                    .fillMaxWidth()
-                    .padding(8.dp),
+                modifier          = Modifier.fillMaxWidth().padding(8.dp),
                 verticalAlignment = Alignment.Bottom
             ) {
                 OutlinedTextField(
@@ -258,12 +301,12 @@ fun AgentChatScreen(viewModel: MainViewModel = viewModel()) {
                 Button(
                     onClick = {
                         viewModel.sendMessage(
-                            userInput        = prompt.trim(),
-                            model            = selectedModel,
-                            maxTokens        = maxTokensText.toIntOrNull(),
-                            temperature      = temperatureText.toDoubleOrNull(),
-                            thinkingEnabled  = thinkingEnabled,
-                            reasoningEffort  = reasoningEffort.takeIf { thinkingEnabled }
+                            userInput       = prompt.trim(),
+                            model           = selectedModel,
+                            maxTokens       = maxTokensText.toIntOrNull(),
+                            temperature     = temperatureText.toDoubleOrNull(),
+                            thinkingEnabled = thinkingEnabled,
+                            reasoningEffort = reasoningEffort.takeIf { thinkingEnabled }
                         )
                         prompt = ""
                     },
@@ -277,16 +320,21 @@ fun AgentChatScreen(viewModel: MainViewModel = viewModel()) {
     }
 }
 
-// ── Session stats panel ────────────────────────────────────────────────────────
+// ── Context header ─────────────────────────────────────────────────────────────
 
 @Composable
-fun ContextHeader(stats: MainViewModel.SessionStats) {
-    if (stats.turnCount == 0) return
+fun ContextHeader(
+    stats: MainViewModel.SessionStats,
+    compressionEnabled: Boolean,
+    keepLastN: Int,
+    summary: String?
+) {
+    if (stats.turnCount == 0 && !compressionEnabled) return
 
     val fraction = stats.contextFraction
     val barColor = when {
         fraction >= 0.85f -> MaterialTheme.colorScheme.error
-        fraction >= 0.70f -> Color(0xFFF57C00)   // оранжевый
+        fraction >= 0.70f -> Color(0xFFF57C00)
         else              -> MaterialTheme.colorScheme.primary
     }
 
@@ -296,52 +344,91 @@ fun ContextHeader(stats: MainViewModel.SessionStats) {
     ) {
         Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
 
-            // Строка с суммарной статистикой сессии
-            Row(
-                modifier              = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment     = Alignment.CenterVertically
-            ) {
-                StatChip("Ходов", "${stats.turnCount}")
-                StatChip("Сгенерировано", "${fmtTokens(stats.totalCompletionTokens)} tok")
-                StatChip("Потрачено", "${"%.5f".format(stats.totalCost)} \$")
+            if (stats.turnCount > 0) {
+                Row(
+                    modifier              = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment     = Alignment.CenterVertically
+                ) {
+                    StatChip("Ходов", "${stats.turnCount}")
+                    StatChip("Сгенерировано", "${fmtTokens(stats.totalCompletionTokens)} tok")
+                    StatChip("Потрачено", "${"%.5f".format(stats.totalCost)} \$")
+                }
+
+                if (stats.contextTokens > 0) {
+                    Spacer(Modifier.height(5.dp))
+                    Row(
+                        modifier          = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text  = "Контекст",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        LinearProgressIndicator(
+                            progress   = { fraction.coerceIn(0f, 1f) },
+                            modifier   = Modifier
+                                .weight(1f)
+                                .height(5.dp)
+                                .clip(RoundedCornerShape(3.dp)),
+                            color      = barColor,
+                            trackColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)
+                        )
+                        Text(
+                            text  = "${(fraction * 100).toInt()}% · ${fmtTokens(stats.contextTokens)}/${fmtTokens(stats.contextLimit)}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = barColor
+                        )
+                    }
+
+                    if (fraction >= 0.85f) {
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            text  = "⚠ Контекст почти заполнен — следующий запрос может завершиться ошибкой",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
             }
 
-            // Прогресс-бар контекста (только когда есть данные)
-            if (stats.contextTokens > 0) {
-                Spacer(Modifier.height(5.dp))
+            // Compression status row
+            if (compressionEnabled) {
+                if (stats.turnCount > 0) Spacer(Modifier.height(4.dp))
                 Row(
                     modifier          = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Text(
-                        text  = "Контекст",
+                        text       = "🗜 Сжатие ON",
+                        style      = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Medium,
+                        color      = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        text  = "· последние $keepLastN сообщений",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    LinearProgressIndicator(
-                        progress     = { fraction.coerceIn(0f, 1f) },
-                        modifier     = Modifier
-                            .weight(1f)
-                            .height(5.dp)
-                            .clip(RoundedCornerShape(3.dp)),
-                        color        = barColor,
-                        trackColor   = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)
-                    )
                     Text(
-                        text  = "${(fraction * 100).toInt()}% · ${fmtTokens(stats.contextTokens)}/${fmtTokens(stats.contextLimit)}",
+                        text  = if (summary != null) "· summary: есть ✓" else "· summary: нет",
                         style = MaterialTheme.typography.labelSmall,
-                        color = barColor
+                        color = if (summary != null)
+                            MaterialTheme.colorScheme.primary
+                        else
+                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
                     )
                 }
-
-                if (fraction >= 0.85f) {
+                if (summary != null) {
                     Spacer(Modifier.height(2.dp))
                     Text(
-                        text  = "⚠ Контекст почти заполнен — следующий запрос может завершиться ошибкой",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.error
+                        text     = summary.lines().first().take(120) + if (summary.length > 120) "…" else "",
+                        style    = MaterialTheme.typography.labelSmall,
+                        color    = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                        maxLines = 2
                     )
                 }
             }
@@ -374,14 +461,10 @@ private fun fmtTokens(n: Int): String =
 @Composable
 fun ChatTurnItem(turn: MainViewModel.ChatTurn) {
     Column(modifier = Modifier.fillMaxWidth()) {
-        // User bubble — right-aligned
-        Row(
-            modifier              = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.End
-        ) {
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
             Surface(
-                color  = MaterialTheme.colorScheme.primaryContainer,
-                shape  = RoundedCornerShape(topStart = 16.dp, topEnd = 4.dp, bottomStart = 16.dp, bottomEnd = 16.dp),
+                color    = MaterialTheme.colorScheme.primaryContainer,
+                shape    = RoundedCornerShape(topStart = 16.dp, topEnd = 4.dp, bottomStart = 16.dp, bottomEnd = 16.dp),
                 modifier = Modifier.widthIn(max = 300.dp)
             ) {
                 Text(
@@ -395,11 +478,7 @@ fun ChatTurnItem(turn: MainViewModel.ChatTurn) {
 
         Spacer(Modifier.height(8.dp))
 
-        // Agent bubble — left-aligned
-        Row(
-            modifier              = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.Start
-        ) {
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
             Surface(
                 color = MaterialTheme.colorScheme.secondaryContainer,
                 shape = RoundedCornerShape(topStart = 4.dp, topEnd = 16.dp, bottomStart = 16.dp, bottomEnd = 16.dp)
@@ -450,16 +529,11 @@ fun ModelDropdown(models: List<String>, selected: String, onSelected: (String) -
             readOnly      = true,
             label         = { Text("Модель") },
             trailingIcon  = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-            modifier      = Modifier
-                .fillMaxWidth()
-                .menuAnchor()
+            modifier      = Modifier.fillMaxWidth().menuAnchor()
         )
         ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             models.forEach { model ->
-                DropdownMenuItem(
-                    text    = { Text(model) },
-                    onClick = { onSelected(model); expanded = false }
-                )
+                DropdownMenuItem(text = { Text(model) }, onClick = { onSelected(model); expanded = false })
             }
         }
     }
@@ -476,16 +550,11 @@ fun ReasoningEffortDropdown(efforts: List<String>, selected: String, onSelected:
             readOnly      = true,
             label         = { Text("Reasoning Effort") },
             trailingIcon  = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-            modifier      = Modifier
-                .fillMaxWidth()
-                .menuAnchor()
+            modifier      = Modifier.fillMaxWidth().menuAnchor()
         )
         ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             efforts.forEach { effort ->
-                DropdownMenuItem(
-                    text    = { Text(effort) },
-                    onClick = { onSelected(effort); expanded = false }
-                )
+                DropdownMenuItem(text = { Text(effort) }, onClick = { onSelected(effort); expanded = false })
             }
         }
     }
