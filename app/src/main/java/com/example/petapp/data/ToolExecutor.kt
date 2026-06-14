@@ -12,32 +12,23 @@ import okhttp3.Request
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import retrofit2.http.GET
+import retrofit2.http.Path
 import retrofit2.http.Query
 
 class ToolExecutor(
     private val yandexUser: String,
-    private val yandexKey: String,
-    private val yandexWeatherKey: String
+    private val yandexKey: String
 ) {
 
     // ── Retrofit interfaces ───────────────────────────────────────────────────
 
-    private interface NominatimApi {
-        @GET("search")
-        suspend fun search(
-            @Query("q")      query:  String,
-            @Query("format") format: String = "json",
-            @Query("limit")  limit:  Int    = 1
-        ): List<NominatimResult>
-    }
-
-    private interface YandexWeatherApi {
-        @GET("v2/informers")
-        suspend fun get(
-            @Query("lat")  lat:  Double,
-            @Query("lon")  lon:  Double,
-            @Query("lang") lang: String = "ru_RU"
-        ): YandexWeatherResponse
+    private interface WttrApi {
+        @GET("{city}")
+        suspend fun getWeather(
+            @Path("city")    city:   String,
+            @Query("format") format: String = "j1",
+            @Query("lang")   lang:   String = "ru"
+        ): WttrResponse
     }
 
     private interface CurrencyApi {
@@ -51,20 +42,17 @@ class ToolExecutor(
 
     // ── Response models ───────────────────────────────────────────────────────
 
-    private data class NominatimResult(
-        val lat: String,
-        val lon: String,
-        @SerializedName("display_name") val displayName: String
+    private data class WttrResponse(
+        @SerializedName("current_condition") val currentCondition: List<WttrCondition>?
     )
-
-    private data class YandexWeatherResponse(val fact: WeatherFact?)
-    private data class WeatherFact(
-        val temp: Int?,
-        @SerializedName("feels_like")  val feelsLike:  Int?,
-        val condition: String?,
-        @SerializedName("wind_speed")  val windSpeed:  Double?,
-        val humidity: Int?
+    private data class WttrCondition(
+        @SerializedName("temp_C")        val tempC:        String?,
+        @SerializedName("FeelsLikeC")    val feelsLikeC:   String?,
+        val humidity:                                       String?,
+        @SerializedName("windspeedKmph") val windspeedKmph: String?,
+        @SerializedName("weatherDesc")   val weatherDesc:  List<WttrDesc>?
     )
+    private data class WttrDesc(val value: String?)
 
     private data class CurrencyResponse(
         val date: String,
@@ -73,15 +61,9 @@ class ToolExecutor(
 
     // ── Service instances ─────────────────────────────────────────────────────
 
-    private val nominatimApi = buildClient<NominatimApi>(
-        "https://nominatim.openstreetmap.org/",
-        NominatimApi::class.java,
-        headers = mapOf("User-Agent" to "PetApp/1.0")
-    )
-    private val yandexWeatherApi = buildClient<YandexWeatherApi>(
-        "https://api.weather.yandex.ru/",
-        YandexWeatherApi::class.java,
-        headers = mapOf("X-Yandex-Weather-Key" to yandexWeatherKey)
+    private val wttrApi = buildClient<WttrApi>(
+        "https://wttr.in/",
+        WttrApi::class.java
     )
     private val currencyApi = buildClient<CurrencyApi>(
         "https://api.frankfurter.app/",
@@ -111,31 +93,20 @@ class ToolExecutor(
     // ── Tool implementations ──────────────────────────────────────────────────
 
     private suspend fun getWeather(args: JsonObject): String {
-        if (yandexWeatherKey.isBlank()) {
-            return "Погода недоступна: добавь YANDEX_WEATHER_KEY в local.properties. " +
-                   "Ключ: https://developer.tech.yandex.ru/services/38"
-        }
         val city = args.get("city").asString
-
-        val geoResults = nominatimApi.search(city)
-        val geo = geoResults.firstOrNull() ?: return "Город '$city' не найден"
-        val lat = geo.lat.toDoubleOrNull() ?: return "Не удалось определить координаты '$city'"
-        val lon = geo.lon.toDoubleOrNull() ?: return "Не удалось определить координаты '$city'"
-
-        val weather = yandexWeatherApi.get(lat, lon)
-        val fact = weather.fact ?: return "Данные о погоде недоступны"
-
-        val cityName = geo.displayName.split(",").firstOrNull()?.trim() ?: city
-        return "Погода в $cityName: ${conditionDesc(fact.condition)}, " +
-               "температура ${fact.temp}°C (ощущается как ${fact.feelsLike}°C), " +
-               "влажность ${fact.humidity}%, ветер ${fact.windSpeed} м/с"
+        val resp = wttrApi.getWeather(city)
+        val cond = resp.currentCondition?.firstOrNull()
+            ?: return "Данные о погоде для '$city' недоступны"
+        val desc = cond.weatherDesc?.firstOrNull()?.value ?: "неизвестно"
+        return "Погода в $city: $desc, " +
+               "температура ${cond.tempC}°C (ощущается как ${cond.feelsLikeC}°C), " +
+               "влажность ${cond.humidity}%, ветер ${cond.windspeedKmph} км/ч"
     }
 
     private suspend fun convertCurrency(args: JsonObject): String {
         val amount = args.get("amount").asDouble
         val from   = args.get("from").asString.uppercase()
         val to     = args.get("to").asString.uppercase()
-
         val resp   = currencyApi.convert(amount, from, to)
         val result = resp.rates[to] ?: return "Не удалось получить курс $from → $to"
         return "$amount $from = ${"%.2f".format(result)} $to (курс на ${resp.date})"
@@ -196,29 +167,6 @@ class ToolExecutor(
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
-
-    private fun conditionDesc(condition: String?) = when (condition) {
-        "clear"                   -> "ясно"
-        "partly-cloudy"           -> "переменная облачность"
-        "cloudy"                  -> "облачно с прояснениями"
-        "overcast"                -> "пасмурно"
-        "drizzle"                 -> "морось"
-        "light-rain"              -> "небольшой дождь"
-        "rain"                    -> "дождь"
-        "moderate-rain"           -> "умеренный дождь"
-        "heavy-rain"              -> "сильный дождь"
-        "continuous-heavy-rain"   -> "длительный сильный дождь"
-        "showers"                 -> "ливень"
-        "wet-snow"                -> "дождь со снегом"
-        "light-snow"              -> "небольшой снег"
-        "snow"                    -> "снег"
-        "snow-showers"            -> "снегопад"
-        "hail"                    -> "град"
-        "thunderstorm"            -> "гроза"
-        "thunderstorm-with-rain"  -> "дождь с грозой"
-        "thunderstorm-with-hail"  -> "гроза с градом"
-        else                      -> condition ?: "неизвестно"
-    }
 
     private fun <T> buildClient(
         baseUrl: String,
