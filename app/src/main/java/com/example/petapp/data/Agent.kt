@@ -25,6 +25,7 @@ class SimpleAgent(
     sealed class AgentResult {
         data class Success(
             val response: String,
+            val turnMessages: List<Message>, // все сообщения этого хода для сохранения
             val tokenInfo: TokenInfo?,
             val cost: Double?,
             val durationSec: Double
@@ -36,7 +37,6 @@ class SimpleAgent(
     private val history = mutableListOf<Message>()
     private val toolExecutor = ToolExecutor(BuildConfig.BRAVE_SEARCH_API_KEY)
 
-    // Callback for UI to show which tool is running
     var onToolCall: ((String) -> Unit)? = null
 
     companion object {
@@ -45,20 +45,29 @@ class SimpleAgent(
 
     fun updateConfig(newConfig: AgentConfig) { config = newConfig }
 
+    // Восстановление истории из БД при запуске
+    fun loadHistory(messages: List<Message>) {
+        history.clear()
+        history.addAll(messages)
+        Log.d("SimpleAgent", "History restored: ${history.size} messages")
+    }
+
     suspend fun run(userInput: String): AgentResult {
+        val turnStartIndex = history.size
         history.add(Message(role = "user", content = userInput))
-        Log.d("SimpleAgent", "run() — ${history.size} messages in context")
+        Log.d("SimpleAgent", "run() — context: ${history.size} messages")
 
         return try {
-            agentLoop()
+            agentLoop(turnStartIndex)
         } catch (e: Exception) {
-            history.removeLastOrNull()
+            // Откатываем историю если произошла ошибка
+            while (history.size > turnStartIndex) history.removeLastOrNull()
             AgentResult.Failure("Ошибка: ${e.localizedMessage}")
         }
     }
 
-    // Agentic loop: LLM → tool call? → execute → LLM → ... → final answer
-    private suspend fun agentLoop(): AgentResult {
+    // LLM → tool call? → execute → LLM → ... → финальный ответ
+    private suspend fun agentLoop(turnStartIndex: Int): AgentResult {
         val startTime = System.currentTimeMillis()
 
         repeat(MAX_TOOL_ITERATIONS) {
@@ -71,42 +80,29 @@ class SimpleAgent(
                 val toolCalls = message.toolCalls
                     ?: return AgentResult.Failure("Нет tool_calls в сообщении")
 
-                // Add assistant message (with tool_calls) to history
                 history.add(message)
 
-                // Execute each tool and feed results back
                 for (toolCall in toolCalls) {
                     val toolName = toolCall.function.name
                     Log.d("SimpleAgent", "Tool: $toolName args=${toolCall.function.arguments}")
                     onToolCall?.invoke(toolDisplayName(toolName))
 
                     val result = toolExecutor.execute(toolCall)
-                    history.add(
-                        Message(
-                            role = "tool",
-                            content = result,
-                            toolCallId = toolCall.id,
-                            name = toolName
-                        )
-                    )
+                    history.add(Message(role = "tool", content = result, toolCallId = toolCall.id, name = toolName))
                 }
-                // Loop continues — LLM sees tool results and decides what to do next
             } else {
-                // Final answer from LLM
                 val content = choice?.message?.content ?: "Ответ пуст"
                 history.add(Message(role = "assistant", content = content))
 
                 val durationSec = (System.currentTimeMillis() - startTime) / 1000.0
                 val tokenInfo = response.usage?.let { u ->
-                    TokenInfo(
-                        promptTokens = u.promptTokens,
-                        completionTokens = u.completionTokens,
-                        totalTokens = u.totalTokens,
-                        cachedTokens = u.promptTokensDetails?.cachedTokens ?: 0
-                    )
+                    TokenInfo(u.promptTokens, u.completionTokens, u.totalTokens,
+                        u.promptTokensDetails?.cachedTokens ?: 0)
                 }
+
                 return AgentResult.Success(
                     response = content,
+                    turnMessages = history.subList(turnStartIndex, history.size).toList(),
                     tokenInfo = tokenInfo,
                     cost = tokenInfo?.let { calculateCost(it) },
                     durationSec = durationSec
@@ -114,7 +110,7 @@ class SimpleAgent(
             }
         }
 
-        return AgentResult.Failure("Превышен лимит итераций агента ($MAX_TOOL_ITERATIONS)")
+        return AgentResult.Failure("Превышен лимит итераций ($MAX_TOOL_ITERATIONS)")
     }
 
     private fun buildRequest() = ChatRequest(
@@ -125,7 +121,6 @@ class SimpleAgent(
         thinking = if (config.thinkingEnabled) Thinking("enabled") else null,
         reasoningEffort = if (config.thinkingEnabled && !config.reasoningEffort.isNullOrBlank())
             config.reasoningEffort else null,
-        // Tools are disabled in thinking mode (DeepSeek-R1 doesn't support tool calls)
         tools = if (!config.thinkingEnabled) ToolDefinitions.allTools else null,
         toolChoice = if (!config.thinkingEnabled) "auto" else null
     )

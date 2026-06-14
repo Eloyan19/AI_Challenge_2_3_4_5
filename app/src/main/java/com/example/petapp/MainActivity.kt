@@ -329,7 +329,7 @@ private fun buildStatsText(turn: MainViewModel.ChatTurn): String {
     val parts = mutableListOf<String>()
     turn.tokenInfo?.let { parts.add("${it.totalTokens} токенов") }
     turn.cost?.let { parts.add("${"%.6f".format(it)} $") }
-    parts.add("${"%.1f".format(turn.durationSec)} с")
+    turn.durationSec?.let { parts.add("${"%.1f".format(it)} с") }
     return parts.joinToString(" • ")
 }
 
