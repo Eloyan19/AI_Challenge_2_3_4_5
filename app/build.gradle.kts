@@ -14,6 +14,7 @@ if (localPropertiesFile.exists()) {
     localProperties.load(localPropertiesFile.inputStream())
 }
 val deepseekApiKey = localProperties.getProperty("DEEPSEEK_API_KEY") ?: ""
+val braveApiKey = localProperties.getProperty("BRAVE_SEARCH_API_KEY") ?: ""
 
 android {
     namespace = "com.example.petapp"
@@ -32,6 +33,7 @@ android {
         android.buildFeatures.buildConfig = true
 
         buildConfigField("String", "DEEPSEEK_API_KEY", "\"$deepseekApiKey\"")
+        buildConfigField("String", "BRAVE_SEARCH_API_KEY", "\"$braveApiKey\"")
     }
 
     buildTypes {

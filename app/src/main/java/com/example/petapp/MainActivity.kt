@@ -78,6 +78,7 @@ fun AgentChatScreen(viewModel: MainViewModel = viewModel()) {
     var advancedExpanded by remember { mutableStateOf(false) }
 
     val isLoading = uiState is MainViewModel.UiState.Loading
+    val toolStatus = (uiState as? MainViewModel.UiState.Loading)?.toolStatus
 
     LaunchedEffect(chatHistory.size) {
         if (chatHistory.isNotEmpty()) {
@@ -189,9 +190,18 @@ fun AgentChatScreen(viewModel: MainViewModel = viewModel()) {
                     item {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.Start
+                            horizontalArrangement = Arrangement.Start,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            CircularProgressIndicator(modifier = Modifier.size(28.dp))
+                            CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                            if (toolStatus != null) {
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    text = toolStatus,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                                )
+                            }
                         }
                     }
                 }

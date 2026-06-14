@@ -21,7 +21,7 @@ class MainViewModel : ViewModel() {
 
     sealed class UiState {
         object Idle : UiState()
-        object Loading : UiState()
+        data class Loading(val toolStatus: String? = null) : UiState()
         data class Error(val message: String) : UiState()
     }
 
@@ -50,8 +50,12 @@ class MainViewModel : ViewModel() {
                 reasoningEffort = reasoningEffort
             )
         )
+        agent.onToolCall = { status ->
+            _uiState.value = UiState.Loading(toolStatus = status)
+        }
+
         viewModelScope.launch {
-            _uiState.value = UiState.Loading
+            _uiState.value = UiState.Loading()
             when (val result = agent.run(userInput)) {
                 is SimpleAgent.AgentResult.Success -> {
                     _chatHistory.value += ChatTurn(
