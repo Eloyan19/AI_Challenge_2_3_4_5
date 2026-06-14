@@ -4,13 +4,20 @@ import android.util.Log
 import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.google.gson.annotations.SerializedName
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
+import okhttp3.Request
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import retrofit2.http.GET
 import retrofit2.http.Query
 
-class ToolExecutor(private val braveApiKey: String) {
+class ToolExecutor(
+    private val yandexUser: String,
+    private val yandexKey: String
+) {
 
     // ── Retrofit interfaces ───────────────────────────────────────────────────
 
@@ -41,14 +48,6 @@ class ToolExecutor(private val braveApiKey: String) {
         ): CurrencyResponse
     }
 
-    private interface SearchApi {
-        @GET("res/v1/web/search")
-        suspend fun search(
-            @Query("q") query: String,
-            @Query("count") count: Int = 5
-        ): BraveSearchResponse
-    }
-
     // ── Response models ───────────────────────────────────────────────────────
 
     private data class GeocodingResponse(val results: List<GeoLocation>?)
@@ -72,14 +71,6 @@ class ToolExecutor(private val braveApiKey: String) {
         val rates: Map<String, Double>
     )
 
-    private data class BraveSearchResponse(val web: BraveWebResults?)
-    private data class BraveWebResults(val results: List<BraveResult>?)
-    private data class BraveResult(
-        val title: String,
-        val url: String,
-        val description: String?
-    )
-
     // ── Service instances ─────────────────────────────────────────────────────
 
     private val geocodingApi = buildClient<GeocodingApi>(
@@ -94,14 +85,8 @@ class ToolExecutor(private val braveApiKey: String) {
         "https://api.frankfurter.app/",
         CurrencyApi::class.java
     )
-    private val searchApi = buildClient<SearchApi>(
-        baseUrl = "https://api.search.brave.com/",
-        clazz = SearchApi::class.java,
-        headers = mapOf(
-            "X-Subscription-Token" to braveApiKey,
-            "Accept" to "application/json"
-        )
-    )
+
+    private val httpClient = OkHttpClient()
 
     // ── Public API ────────────────────────────────────────────────────────────
 
@@ -147,17 +132,58 @@ class ToolExecutor(private val braveApiKey: String) {
     }
 
     private suspend fun webSearch(args: JsonObject): String {
-        if (braveApiKey.isBlank()) {
-            return "Поиск недоступен: добавь BRAVE_SEARCH_API_KEY=<ключ> в local.properties. " +
-                   "Бесплатный ключ: https://api.search.brave.com"
+        if (yandexUser.isBlank() || yandexKey.isBlank()) {
+            return "Поиск недоступен: добавь YANDEX_SEARCH_USER=<логин> и " +
+                   "YANDEX_SEARCH_KEY=<ключ> в local.properties. " +
+                   "Ключ получить на https://xml.yandex.com/"
         }
         val query = args.get("query").asString
-        val resp = searchApi.search(query)
-        val results = resp.web?.results?.take(3)
-            ?: return "Ничего не найдено по запросу: $query"
 
-        return results.joinToString("\n\n") { r ->
-            "${r.title}\n${r.description.orEmpty()}\n${r.url}"
+        val url = "https://yandex.com/search/xml".toHttpUrl().newBuilder()
+            .addQueryParameter("user",    yandexUser)
+            .addQueryParameter("key",     yandexKey)
+            .addQueryParameter("query",   query)
+            .addQueryParameter("l10n",    "ru")
+            .addQueryParameter("sortby",  "rlv")
+            .addQueryParameter("filter",  "none")
+            .addQueryParameter("groupby", "attr=d.mode=flat.groups-on-page=5.docs-in-group=1")
+            .build()
+
+        val xml = withContext(Dispatchers.IO) {
+            httpClient.newCall(Request.Builder().url(url).build()).execute().use { response ->
+                if (!response.isSuccessful) null else response.body?.string()
+            }
+        } ?: return "Поиск не дал результатов по запросу: $query"
+
+        return parseYandexXml(xml, query)
+    }
+
+    private fun parseYandexXml(xml: String, query: String): String {
+        val errorMatch = Regex("<error[^>]*>(.*?)</error>").find(xml)
+        if (errorMatch != null) return "Ошибка Яндекс.Поиска: ${errorMatch.groupValues[1]}"
+
+        fun stripTags(s: String) =
+            s.replace(Regex("<[^>]+>"), " ").replace(Regex("\\s+"), " ").trim()
+
+        data class Result(val url: String, val title: String, val snippet: String)
+
+        val results = mutableListOf<Result>()
+        val docRe      = Regex("<doc[^>]*>(.*?)</doc>",         RegexOption.DOT_MATCHES_ALL)
+        val urlRe      = Regex("<url>(.*?)</url>",               RegexOption.DOT_MATCHES_ALL)
+        val titleRe    = Regex("<title>(.*?)</title>",           RegexOption.DOT_MATCHES_ALL)
+        val headlineRe = Regex("<headline>(.*?)</headline>",     RegexOption.DOT_MATCHES_ALL)
+
+        for (docMatch in docRe.findAll(xml)) {
+            val body    = docMatch.groupValues[1]
+            val url     = urlRe.find(body)?.groupValues?.get(1)?.trim() ?: continue
+            val title   = stripTags(titleRe.find(body)?.groupValues?.get(1) ?: "")
+            val snippet = stripTags(headlineRe.find(body)?.groupValues?.get(1) ?: "")
+            if (url.isNotBlank()) results.add(Result(url, title, snippet))
+        }
+
+        if (results.isEmpty()) return "Ничего не найдено по запросу: $query"
+        return results.take(3).joinToString("\n\n") { r ->
+            "${r.title}\n${r.snippet}\n${r.url}"
         }
     }
 

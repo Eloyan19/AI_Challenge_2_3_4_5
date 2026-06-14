@@ -35,7 +35,7 @@ class SimpleAgent(
 
     private var config: AgentConfig = initialConfig
     private val history = mutableListOf<Message>()
-    private val toolExecutor = ToolExecutor(BuildConfig.BRAVE_SEARCH_API_KEY)
+    private val toolExecutor = ToolExecutor(BuildConfig.YANDEX_SEARCH_USER, BuildConfig.YANDEX_SEARCH_KEY)
 
     var onToolCall: ((String) -> Unit)? = null
 

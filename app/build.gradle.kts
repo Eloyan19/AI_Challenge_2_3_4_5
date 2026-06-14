@@ -15,7 +15,8 @@ if (localPropertiesFile.exists()) {
     localProperties.load(localPropertiesFile.inputStream())
 }
 val deepseekApiKey = localProperties.getProperty("DEEPSEEK_API_KEY") ?: ""
-val braveApiKey = localProperties.getProperty("BRAVE_SEARCH_API_KEY") ?: ""
+val yandexSearchUser = localProperties.getProperty("YANDEX_SEARCH_USER") ?: ""
+val yandexSearchKey  = localProperties.getProperty("YANDEX_SEARCH_KEY")  ?: ""
 
 android {
     namespace = "com.example.petapp"
@@ -33,8 +34,9 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         android.buildFeatures.buildConfig = true
 
-        buildConfigField("String", "DEEPSEEK_API_KEY", "\"$deepseekApiKey\"")
-        buildConfigField("String", "BRAVE_SEARCH_API_KEY", "\"$braveApiKey\"")
+        buildConfigField("String", "DEEPSEEK_API_KEY",     "\"$deepseekApiKey\"")
+        buildConfigField("String", "YANDEX_SEARCH_USER",  "\"$yandexSearchUser\"")
+        buildConfigField("String", "YANDEX_SEARCH_KEY",   "\"$yandexSearchKey\"")
     }
 
     buildTypes {
