@@ -9,6 +9,7 @@ import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.util.concurrent.TimeUnit
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import retrofit2.http.GET
@@ -70,7 +71,10 @@ class ToolExecutor(
         CurrencyApi::class.java
     )
 
-    private val httpClient = OkHttpClient()
+    private val httpClient = OkHttpClient.Builder()
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .build()
 
     // ── Public API ────────────────────────────────────────────────────────────
 
@@ -173,15 +177,18 @@ class ToolExecutor(
         clazz: Class<T>,
         headers: Map<String, String> = emptyMap()
     ): T {
-        val client = OkHttpClient.Builder().apply {
-            if (headers.isNotEmpty()) {
-                addInterceptor { chain ->
-                    val req = chain.request().newBuilder()
-                    headers.forEach { (k, v) -> req.addHeader(k, v) }
-                    chain.proceed(req.build())
+        val client = OkHttpClient.Builder()
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .apply {
+                if (headers.isNotEmpty()) {
+                    addInterceptor { chain ->
+                        val req = chain.request().newBuilder()
+                        headers.forEach { (k, v) -> req.addHeader(k, v) }
+                        chain.proceed(req.build())
+                    }
                 }
-            }
-        }.build()
+            }.build()
 
         return Retrofit.Builder()
             .baseUrl(baseUrl)
