@@ -1,16 +1,25 @@
 package com.example.petapp.data.repository
 
+import com.example.petapp.data.local.BranchDao
+import com.example.petapp.data.local.BranchEntity
 import com.example.petapp.data.local.ChatMessageDao
 import com.example.petapp.data.local.ChatMessageEntity
+import com.example.petapp.data.local.StickyFactsDao
+import com.example.petapp.data.local.StickyFactsEntity
 import com.example.petapp.data.local.SummaryDao
 import com.example.petapp.data.local.SummaryEntity
+import com.example.petapp.domain.model.Branch
 import com.example.petapp.domain.model.ChatMessage
 import com.example.petapp.domain.repository.ChatRepository
 
 class ChatRepositoryImpl(
     private val dao: ChatMessageDao,
-    private val summaryDao: SummaryDao
+    private val summaryDao: SummaryDao,
+    private val stickyFactsDao: StickyFactsDao,
+    private val branchDao: BranchDao
 ) : ChatRepository {
+
+    // ── Linear history ──────────────────────────────────────────────────────────
 
     override suspend fun getAllMessages(): List<ChatMessage> =
         dao.getAll().map { it.toDomain() }
@@ -18,7 +27,13 @@ class ChatRepositoryImpl(
     override suspend fun saveMessages(messages: List<ChatMessage>) =
         dao.insertAll(messages.map { it.toEntity() })
 
-    override suspend fun clearAll() = dao.clearAll()
+    override suspend fun clearAll() {
+        dao.clearAll()
+        summaryDao.clear()
+        stickyFactsDao.clear()
+    }
+
+    // ── Summary ─────────────────────────────────────────────────────────────────
 
     override suspend fun getSummary(): String? = summaryDao.get()?.content
 
@@ -27,19 +42,73 @@ class ChatRepositoryImpl(
 
     override suspend fun clearSummary() = summaryDao.clear()
 
+    // ── Sticky facts ─────────────────────────────────────────────────────────────
+
+    override suspend fun getFacts(): String? = stickyFactsDao.get()?.content
+
+    override suspend fun saveFacts(content: String) =
+        stickyFactsDao.save(StickyFactsEntity(content = content, updatedAt = System.currentTimeMillis()))
+
+    override suspend fun clearFacts() = stickyFactsDao.clear()
+
+    // ── Branches ─────────────────────────────────────────────────────────────────
+
+    override suspend fun getAllBranches(): List<Branch> =
+        branchDao.getAll().map { it.toDomain() }
+
+    override suspend fun getBranch(id: Long): Branch? =
+        branchDao.getById(id)?.toDomain()
+
+    override suspend fun createBranch(
+        name: String,
+        parentBranchId: Long,
+        checkpointMessageId: Long?
+    ): Long = branchDao.insert(
+        BranchEntity(
+            name                = name,
+            parentBranchId      = parentBranchId,
+            checkpointMessageId = checkpointMessageId,
+            createdAt           = System.currentTimeMillis()
+        )
+    )
+
+    override suspend fun getMessagesForBranch(branchId: Long): List<ChatMessage> =
+        dao.getByBranch(branchId).map { it.toDomain() }
+
+    override suspend fun getMessagesForBranchUpTo(branchId: Long, upToId: Long): List<ChatMessage> =
+        dao.getByBranchUpTo(branchId, upToId).map { it.toDomain() }
+
+    override suspend fun getLastMessageIdForBranch(branchId: Long): Long? =
+        dao.getLastIdForBranch(branchId)
+
+    override suspend fun clearBranchMessages(branchId: Long) =
+        dao.clearBranch(branchId)
+
+    override suspend fun resetBranches() {
+        dao.clearNonMainBranches()
+        branchDao.deleteAllExceptMain()
+    }
+
+    // ── Mapping ──────────────────────────────────────────────────────────────────
+
     private fun ChatMessageEntity.toDomain() = ChatMessage(
-        id = id, turnId = turnId, role = role, messageJson = messageJson,
-        displayText = displayText, promptTokens = promptTokens,
-        completionTokens = completionTokens, totalTokens = totalTokens,
-        cachedTokens = cachedTokens, cost = cost, durationSec = durationSec,
-        timestamp = timestamp
+        id = id, branchId = branchId, turnId = turnId, role = role,
+        messageJson = messageJson, displayText = displayText,
+        promptTokens = promptTokens, completionTokens = completionTokens,
+        totalTokens = totalTokens, cachedTokens = cachedTokens,
+        cost = cost, durationSec = durationSec, timestamp = timestamp
     )
 
     private fun ChatMessage.toEntity() = ChatMessageEntity(
-        id = id, turnId = turnId, role = role, messageJson = messageJson,
-        displayText = displayText, promptTokens = promptTokens,
-        completionTokens = completionTokens, totalTokens = totalTokens,
-        cachedTokens = cachedTokens, cost = cost, durationSec = durationSec,
-        timestamp = timestamp
+        id = id, branchId = branchId, turnId = turnId, role = role,
+        messageJson = messageJson, displayText = displayText,
+        promptTokens = promptTokens, completionTokens = completionTokens,
+        totalTokens = totalTokens, cachedTokens = cachedTokens,
+        cost = cost, durationSec = durationSec, timestamp = timestamp
+    )
+
+    private fun BranchEntity.toDomain() = Branch(
+        id = id, name = name, parentBranchId = parentBranchId,
+        checkpointMessageId = checkpointMessageId, createdAt = createdAt
     )
 }

@@ -2,6 +2,7 @@ package com.example.petapp.domain.model
 
 data class ChatMessage(
     val id: Long = 0,
+    val branchId: Long = 1L,
     val turnId: Long,
     val role: String,
     val messageJson: String,

@@ -2,6 +2,8 @@ package com.example.petapp.data
 
 import android.util.Log
 import com.example.petapp.BuildConfig
+import com.example.petapp.domain.strategy.ContextStrategy
+import com.example.petapp.domain.strategy.NoopStrategy
 
 class SimpleAgent(
     private val apiService: DeepSeekApiService,
@@ -34,18 +36,11 @@ class SimpleAgent(
     }
 
     private var config: AgentConfig = initialConfig
-    private val history = mutableListOf<Message>()
+    val history = mutableListOf<Message>()
     private val toolExecutor = ToolExecutor(BuildConfig.YANDEX_SEARCH_USER, BuildConfig.YANDEX_SEARCH_KEY)
-    private val contextCompressor = ContextCompressor(apiService)
 
+    var strategy: ContextStrategy = NoopStrategy()
     var onToolCall: ((String) -> Unit)? = null
-
-    // Делегирующие свойства для ViewModel
-    var onSummaryUpdated: ((String?) -> Unit)?
-        get() = contextCompressor.onSummaryUpdated
-        set(v) { contextCompressor.onSummaryUpdated = v }
-
-    val currentSummary: String? get() = contextCompressor.summary
 
     companion object {
         private const val MAX_TOOL_ITERATIONS = 5
@@ -53,35 +48,26 @@ class SimpleAgent(
 
     fun updateConfig(newConfig: AgentConfig) { config = newConfig }
 
-    fun setCompressionConfig(enabled: Boolean, keepLastN: Int) {
-        contextCompressor.enabled = enabled
-        contextCompressor.keepLastN = keepLastN
-    }
-
     fun loadHistory(messages: List<Message>) {
         history.clear()
         history.addAll(messages)
-        Log.d("SimpleAgent", "History restored: ${history.size} messages")
-    }
-
-    fun loadSummary(summary: String?) {
-        contextCompressor.summary = summary
+        Log.d("SimpleAgent", "History loaded: ${history.size} messages")
     }
 
     suspend fun run(userInput: String): AgentResult {
         history.add(Message(role = "user", content = userInput))
+        strategy.prepareContext(history)
 
-        // Перед запросом сжимаем старые сообщения (если включено)
-        if (contextCompressor.enabled) {
-            contextCompressor.prepareContext(history)
-        }
-
-        // После возможного сжатия user-сообщение всегда в конце списка
+        // After possible in-place trimming, the user message is always last
         val turnStartIndex = history.lastIndex
-        Log.d("SimpleAgent", "run() — ${history.size} messages, compression=${contextCompressor.enabled}")
+        Log.d("SimpleAgent", "run() — ${history.size} msgs, strategy=${strategy.type}")
 
         return try {
-            agentLoop(turnStartIndex)
+            val result = agentLoop(turnStartIndex)
+            if (result is AgentResult.Success) {
+                strategy.afterTurn(history)
+            }
+            result
         } catch (e: Exception) {
             while (history.size > turnStartIndex) history.removeLastOrNull()
             AgentResult.Failure("Ошибка: ${e.localizedMessage}")
@@ -96,11 +82,10 @@ class SimpleAgent(
             val choice = response.choices?.firstOrNull()
 
             if (choice?.finishReason == "tool_calls") {
-                val message  = choice.message  ?: return AgentResult.Failure("Пустой ответ с tool_calls")
+                val message   = choice.message  ?: return AgentResult.Failure("Пустой ответ с tool_calls")
                 val toolCalls = message.toolCalls ?: return AgentResult.Failure("Нет tool_calls в сообщении")
 
                 history.add(message)
-
                 for (toolCall in toolCalls) {
                     val toolName = toolCall.function.name
                     Log.d("SimpleAgent", "Tool: $toolName args=${toolCall.function.arguments}")
@@ -113,7 +98,7 @@ class SimpleAgent(
                 history.add(Message(role = "assistant", content = content))
 
                 val durationSec = (System.currentTimeMillis() - startTime) / 1000.0
-                val tokenInfo = response.usage?.let { u ->
+                val tokenInfo   = response.usage?.let { u ->
                     TokenInfo(u.promptTokens, u.completionTokens, u.totalTokens,
                         u.promptTokensDetails?.cachedTokens ?: 0)
                 }
@@ -133,7 +118,7 @@ class SimpleAgent(
 
     private fun buildRequest() = ChatRequest(
         model    = config.model,
-        messages = contextCompressor.buildMessages(history),
+        messages = strategy.buildMessages(history),
         maxTokens   = config.maxTokens,
         temperature = if (config.thinkingEnabled) null else config.temperature,
         thinking    = if (config.thinkingEnabled) Thinking("enabled") else null,
@@ -164,6 +149,6 @@ class SimpleAgent(
 
     fun reset() {
         history.clear()
-        contextCompressor.reset()
+        strategy.reset()
     }
 }
