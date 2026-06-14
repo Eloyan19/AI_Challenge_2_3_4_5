@@ -7,6 +7,17 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
+/**
+ * Room database for the chat application.
+ *
+ * **Schema version history:**
+ * - v1 → v2 ([MIGRATION_1_2]): added the `conversation_summary` table for the Summary strategy.
+ * - v2 → v3 ([MIGRATION_2_3]): added `branch_id` column to `chat_messages`, created the
+ *   `branches` and `sticky_facts` tables, and seeded the root main branch (id = 1).
+ *
+ * Obtained via [getInstance] which guarantees a single instance per process using
+ * double-checked locking. Provided to DI via [com.example.petapp.di.DatabaseModule].
+ */
 @Database(
     entities = [
         ChatMessageEntity::class,
@@ -74,6 +85,13 @@ abstract class ChatDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Returns the singleton [ChatDatabase] instance, creating it on first call.
+         *
+         * Thread-safe via double-checked locking with a `@Volatile` field.
+         * Migrations are applied automatically by Room when the on-disk schema version
+         * is lower than the current [version].
+         */
         fun getInstance(context: Context): ChatDatabase =
             INSTANCE ?: synchronized(this) {
                 Room.databaseBuilder(

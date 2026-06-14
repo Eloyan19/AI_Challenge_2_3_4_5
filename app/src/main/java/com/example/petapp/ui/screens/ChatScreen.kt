@@ -52,6 +52,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -73,16 +74,20 @@ fun ChatScreen(navController: NavController, viewModel: MainViewModel) {
     val branches        by viewModel.branches.collectAsStateWithLifecycle()
     val activeBranchId  by viewModel.activeBranchId.collectAsStateWithLifecycle()
 
+    // Inference settings — survive configuration changes via ViewModel
+    val selectedModel    by viewModel.selectedModel.collectAsStateWithLifecycle()
+    val thinkingEnabled  by viewModel.thinkingEnabled.collectAsStateWithLifecycle()
+    val reasoningEffort  by viewModel.reasoningEffort.collectAsStateWithLifecycle()
+    val maxTokensText    by viewModel.maxTokensText.collectAsStateWithLifecycle()
+    val temperatureText  by viewModel.temperatureText.collectAsStateWithLifecycle()
+
     val listState = rememberLazyListState()
 
+    // Ephemeral UI-only state
     var prompt           by remember { mutableStateOf("") }
-    var selectedModel    by remember { mutableStateOf("deepseek-v4-flash") }
-    var thinkingEnabled  by remember { mutableStateOf(false) }
-    var reasoningEffort  by remember { mutableStateOf("medium") }
-    var maxTokensText    by remember { mutableStateOf("") }
-    var temperatureText  by remember { mutableStateOf("") }
     var advancedExpanded by remember { mutableStateOf(false) }
     var showBranchDialog by remember { mutableStateOf(false) }
+    var showResetDialog  by remember { mutableStateOf(false) }
     var newBranchName    by remember { mutableStateOf("") }
     var checkpointId     by remember { mutableStateOf<Long?>(null) }
 
@@ -91,6 +96,22 @@ fun ChatScreen(navController: NavController, viewModel: MainViewModel) {
 
     LaunchedEffect(chatHistory.size) {
         if (chatHistory.isNotEmpty()) listState.animateScrollToItem(chatHistory.size - 1)
+    }
+
+    if (showResetDialog) {
+        AlertDialog(
+            onDismissRequest = { showResetDialog = false },
+            title   = { Text("Начать новую сессию?") },
+            text    = { Text("Вся история диалога и ветки будут удалены без возможности восстановления.") },
+            confirmButton   = {
+                Button(onClick = { viewModel.newSession(); showResetDialog = false }) {
+                    Text("Сбросить")
+                }
+            },
+            dismissButton   = {
+                TextButton(onClick = { showResetDialog = false }) { Text("Отмена") }
+            }
+        )
     }
 
     if (showBranchDialog) {
@@ -156,7 +177,7 @@ fun ChatScreen(navController: NavController, viewModel: MainViewModel) {
                     IconButton(onClick = { navController.navigate("context_settings") }) {
                         Icon(Icons.Default.Settings, contentDescription = "Контекст")
                     }
-                    TextButton(onClick = { viewModel.newSession() }) { Text("Сброс") }
+                    TextButton(onClick = { showResetDialog = true }) { Text("Сброс") }
                 }
             )
         }
@@ -181,19 +202,22 @@ fun ChatScreen(navController: NavController, viewModel: MainViewModel) {
                 ModelDropdown(
                     models     = listOf("deepseek-v4-flash", "deepseek-v4-pro"),
                     selected   = selectedModel,
-                    onSelected = { selectedModel = it }
+                    onSelected = { viewModel.setModel(it) }
                 )
                 Spacer(Modifier.height(8.dp))
                 Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Text("Thinking Mode", modifier = Modifier.weight(1f))
-                    Switch(checked = thinkingEnabled, onCheckedChange = { thinkingEnabled = it })
+                    Switch(
+                        checked         = thinkingEnabled,
+                        onCheckedChange = { viewModel.setThinkingEnabled(it) }
+                    )
                 }
                 if (thinkingEnabled) {
                     Spacer(Modifier.height(8.dp))
                     ReasoningEffortDropdown(
                         efforts    = listOf("min", "low", "medium", "high", "max"),
                         selected   = reasoningEffort,
-                        onSelected = { reasoningEffort = it }
+                        onSelected = { viewModel.setReasoningEffort(it) }
                     )
                 }
                 TextButton(
@@ -209,7 +233,7 @@ fun ChatScreen(navController: NavController, viewModel: MainViewModel) {
                 if (advancedExpanded) {
                     OutlinedTextField(
                         value           = maxTokensText,
-                        onValueChange   = { maxTokensText = it },
+                        onValueChange   = { viewModel.setMaxTokensText(it) },
                         label           = { Text("Max Tokens") },
                         modifier        = Modifier.fillMaxWidth(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
@@ -219,7 +243,7 @@ fun ChatScreen(navController: NavController, viewModel: MainViewModel) {
                         Spacer(Modifier.height(8.dp))
                         OutlinedTextField(
                             value           = temperatureText,
-                            onValueChange   = { temperatureText = it },
+                            onValueChange   = { viewModel.setTemperatureText(it) },
                             label           = { Text("Temperature") },
                             modifier        = Modifier.fillMaxWidth(),
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
@@ -238,7 +262,7 @@ fun ChatScreen(navController: NavController, viewModel: MainViewModel) {
                 contentPadding      = PaddingValues(16.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                items(chatHistory) { turn ->
+                items(chatHistory, key = { it.hashCode() }) { turn ->
                     ChatTurnItem(
                         turn              = turn,
                         showBranchButton  = strategyType == StrategyType.BRANCHING,
@@ -322,14 +346,7 @@ fun ChatScreen(navController: NavController, viewModel: MainViewModel) {
                 Spacer(Modifier.width(8.dp))
                 Button(
                     onClick = {
-                        viewModel.sendMessage(
-                            userInput       = prompt.trim(),
-                            model           = selectedModel,
-                            maxTokens       = maxTokensText.toIntOrNull(),
-                            temperature     = temperatureText.toDoubleOrNull(),
-                            thinkingEnabled = thinkingEnabled,
-                            reasoningEffort = reasoningEffort.takeIf { thinkingEnabled }
-                        )
+                        viewModel.sendMessage(prompt.trim())
                         prompt = ""
                     },
                     enabled        = prompt.isNotBlank() && !isLoading,
@@ -434,7 +451,6 @@ fun ContextHeader(
                 }
             }
 
-            // Strategy-specific aux info
             if (strategyType != StrategyType.NONE && strategyType != StrategyType.BRANCHING) {
                 if (stats.turnCount > 0) Spacer(Modifier.height(4.dp))
                 val strategyLabel = when (strategyType) {
@@ -486,12 +502,13 @@ fun ChatTurnItem(
     showBranchButton: Boolean,
     onCreateBranch: (Long?) -> Unit
 ) {
+    val maxBubbleWidth = (LocalConfiguration.current.screenWidthDp * 0.75f).dp
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
             Surface(
                 color    = MaterialTheme.colorScheme.primaryContainer,
                 shape    = RoundedCornerShape(topStart = 16.dp, topEnd = 4.dp, bottomStart = 16.dp, bottomEnd = 16.dp),
-                modifier = Modifier.widthIn(max = 300.dp)
+                modifier = Modifier.widthIn(max = maxBubbleWidth)
             ) {
                 Text(
                     text     = turn.userMessage,

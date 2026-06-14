@@ -6,6 +6,23 @@ import com.example.petapp.data.DeepSeekApiService
 import com.example.petapp.data.Message
 import com.example.petapp.domain.model.StrategyType
 
+/**
+ * Compresses old messages into a rolling LLM-generated summary.
+ *
+ * **How it works:**
+ * 1. [prepareContext] trims the history to [keepLastN] "live" messages.
+ *    Excess messages at the front are summarized via `deepseek-v4-flash` and removed.
+ *    The resulting text is accumulated with the previous summary (3–6 sentences).
+ * 2. [buildMessages] prepends the current summary as a `"system"` message so the model
+ *    always sees its condensed context before the live window.
+ * 3. [afterTurn] is a no-op — summarization happens eagerly in [prepareContext].
+ *
+ * The summary is persisted to the database via [onAuxDataUpdated] and restored by
+ * [com.example.petapp.ui.MainViewModel] on app restart.
+ *
+ * @param apiService DeepSeek API used for summarization (billed against `deepseek-v4-flash`).
+ * @param keepLastN Number of messages kept in the live window; the rest are summarized.
+ */
 class SummaryStrategy(
     private val apiService: DeepSeekApiService,
     var keepLastN: Int = 10
@@ -17,10 +34,15 @@ class SummaryStrategy(
     override val auxData: String? get() = _summary
     override var onAuxDataUpdated: ((String?) -> Unit)? = null
 
+    /** Allows [com.example.petapp.ui.MainViewModel] to restore a previously saved summary. */
     var summary: String?
         get() = _summary
         set(v) { _summary = v }
 
+    /**
+     * Trims [history] to [keepLastN] by summarizing excess messages via the LLM.
+     * If summarization fails the history is not modified (silent failure to preserve context).
+     */
     override suspend fun prepareContext(history: MutableList<Message>) {
         val excess = history.size - keepLastN
         if (excess <= 0) return
@@ -35,6 +57,10 @@ class SummaryStrategy(
         }
     }
 
+    /**
+     * Prepends the current summary as a `"system"` message if one exists.
+     * The model is instructed not to reveal that this content is a summary.
+     */
     override fun buildMessages(history: List<Message>): List<Message> {
         val s = _summary ?: return history
         return listOf(
@@ -47,11 +73,17 @@ class SummaryStrategy(
 
     override suspend fun afterTurn(history: List<Message>) = Unit
 
+    /** Clears the in-memory summary and notifies the persistence callback. */
     override fun reset() {
         _summary = null
         onAuxDataUpdated?.invoke(null)
     }
 
+    /**
+     * Calls the LLM to produce an updated 3–6 sentence summary of [messages].
+     * If a previous [_summary] exists the prompt asks the model to merge it with the new content.
+     * Returns null on network/API failure so the caller can skip trimming.
+     */
     private suspend fun generateSummary(messages: List<Message>): String? {
         return try {
             val request = ChatRequest(

@@ -25,7 +25,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -38,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
+import com.example.petapp.di.LocalViewModelFactory
 import com.example.petapp.domain.model.StrategyType
 import com.example.petapp.ui.ContextSettingsViewModel
 import com.example.petapp.ui.MainViewModel
@@ -47,21 +47,16 @@ import com.example.petapp.ui.MainViewModel
 fun ContextSettingsScreen(
     navController: NavController,
     chatViewModel: MainViewModel,
-    settingsViewModel: ContextSettingsViewModel = viewModel()
+    settingsViewModel: ContextSettingsViewModel = viewModel(factory = LocalViewModelFactory.current)
 ) {
-    val currentStrategy by chatViewModel.currentStrategyType.collectAsStateWithLifecycle()
-    val currentN        by chatViewModel.keepLastN.collectAsStateWithLifecycle()
-    val auxData         by chatViewModel.auxData.collectAsStateWithLifecycle()
+    val currentStrategy  by chatViewModel.currentStrategyType.collectAsStateWithLifecycle()
+    val auxData          by chatViewModel.auxData.collectAsStateWithLifecycle()
 
     val selectedStrategy by settingsViewModel.selectedStrategy.collectAsStateWithLifecycle()
     val keepLastN        by settingsViewModel.keepLastN.collectAsStateWithLifecycle()
 
-    var keepLastNText by remember { mutableStateOf(currentN.toString()) }
-
-    LaunchedEffect(Unit) {
-        settingsViewModel.init(currentStrategy, currentN)
-        keepLastNText = currentN.toString()
-    }
+    // Local text mirror so the field shows partial input while typing
+    var keepLastNText by remember { mutableStateOf(keepLastN.toString()) }
 
     Scaffold(
         topBar = {
@@ -118,7 +113,7 @@ fun ContextSettingsScreen(
                 type        = StrategyType.STICKY_FACTS,
                 selected    = selectedStrategy,
                 onSelect    = { settingsViewModel.selectStrategy(it) },
-                description = "После каждого хода LLM извлекает ключевые факты (до 10 пунктов). Факты + последние N сообщений отправляются в каждый запрос."
+                description = "После каждого хода факты обновляются через deepseek-v4-flash (бюджетно). Факты + последние N сообщений отправляются в каждый запрос."
             )
             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
@@ -131,7 +126,6 @@ fun ContextSettingsScreen(
 
             Spacer(Modifier.height(20.dp))
 
-            // N setting — shown for all strategies that use it
             if (selectedStrategy in listOf(
                     StrategyType.SLIDING_WINDOW,
                     StrategyType.SUMMARY,
@@ -171,7 +165,6 @@ fun ContextSettingsScreen(
                 )
             }
 
-            // Show current aux data when on the same strategy
             if (selectedStrategy == currentStrategy && auxData != null &&
                 currentStrategy in listOf(StrategyType.SUMMARY, StrategyType.STICKY_FACTS)
             ) {

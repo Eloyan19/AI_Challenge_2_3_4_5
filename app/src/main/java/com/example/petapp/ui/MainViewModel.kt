@@ -1,17 +1,15 @@
 package com.example.petapp.ui
 
-import android.app.Application
-import android.content.Context
-import androidx.lifecycle.AndroidViewModel
+import android.content.SharedPreferences
+import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.petapp.data.ApiClient
+import com.example.petapp.data.DeepSeekApiService
 import com.example.petapp.data.Message
 import com.example.petapp.data.SimpleAgent
-import com.example.petapp.data.local.ChatDatabase
-import com.example.petapp.data.repository.ChatRepositoryImpl
 import com.example.petapp.domain.model.Branch
 import com.example.petapp.domain.model.ChatMessage
 import com.example.petapp.domain.model.StrategyType
+import com.example.petapp.domain.repository.ChatRepository
 import com.example.petapp.domain.strategy.BranchingStrategy
 import com.example.petapp.domain.strategy.ContextStrategy
 import com.example.petapp.domain.strategy.NoopStrategy
@@ -34,29 +32,70 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.atomic.AtomicLong
+import javax.inject.Inject
 
-class MainViewModel(application: Application) : AndroidViewModel(application) {
+/**
+ * Primary ViewModel that drives the chat UI and orchestrates the AI agent, context strategies,
+ * persistence, and branch management.
+ *
+ * **Threading:** [SimpleAgent.history] is not thread-safe. All operations that read or write it
+ * ([sendMessage], [switchBranch], [applyStrategyConfig]) acquire [agentMutex] before executing,
+ * serializing concurrent coroutines that would otherwise race on agent state.
+ *
+ * **Session persistence:** On construction the ViewModel restores the previously active strategy
+ * (including any saved summary/facts) and reloads the message history from the database, so the
+ * user continues exactly where they left off after process death.
+ *
+ * **Inference settings** ([selectedModel], [thinkingEnabled], [reasoningEffort], [maxTokensText],
+ * [temperatureText]) are kept in [StateFlow]s rather than Compose `remember` state so they survive
+ * configuration changes (screen rotation).
+ *
+ * @param prefs Shared preferences for persisting strategy settings between sessions.
+ * @param repository Chat persistence layer.
+ * @param agent The AI agent; shared singleton, accessed only under [agentMutex].
+ * @param apiService DeepSeek API; used directly by context strategies (Summary, StickyFacts).
+ * @param gson Singleton Gson for serializing/deserializing [Message] objects.
+ */
+class MainViewModel @Inject constructor(
+    private val prefs: SharedPreferences,
+    private val repository: ChatRepository,
+    private val agent: SimpleAgent,
+    private val apiService: DeepSeekApiService,
+    private val gson: Gson
+) : ViewModel() {
 
     companion object {
-        const val CONTEXT_LIMIT     = 128_000
+        /** Default number of messages kept in the live window for sliding-window strategies. */
         const val DEFAULT_KEEP_LAST = 10
-        private const val PREFS_NAME    = "context_strategy_prefs"
-        private const val KEY_STRATEGY  = "strategy_type"
-        private const val KEY_KEEP_LAST = "keep_last_n"
-        const val MAIN_BRANCH_ID = 1L
-    }
 
-    // ── Infrastructure ─────────────────────────────────────────────────────────
-    private val prefs = application.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-    private val db = ChatDatabase.getInstance(application)
-    private val repository = ChatRepositoryImpl(
-        db.chatMessageDao(), db.summaryDao(), db.stickyFactsDao(), db.branchDao()
-    )
-    private val gson  = Gson()
-    private val agent = SimpleAgent(ApiClient.service)
+        /** Name of the [SharedPreferences] file used for strategy settings. */
+        const val PREFS_NAME    = "context_strategy_prefs"
+
+        /** SharedPreferences key for the active [StrategyType] name. */
+        const val KEY_STRATEGY  = "strategy_type"
+
+        /** SharedPreferences key for the keep-last-N window size. */
+        const val KEY_KEEP_LAST = "keep_last_n"
+
+        /** Database id of the permanent root branch that is always present. */
+        const val MAIN_BRANCH_ID = 1L
+
+        /**
+         * Returns the context-window size (in tokens) for a given [model] identifier.
+         * Used to render the context usage progress bar with model-accurate limits.
+         */
+        fun contextLimitFor(model: String): Int = when (model) {
+            "deepseek-v4-pro"   -> 128_000
+            "deepseek-v4-flash" -> 128_000
+            else                -> 32_000
+        }
+    }
 
     // ── Use cases ──────────────────────────────────────────────────────────────
     private val loadHistoryUseCase  = LoadHistoryUseCase(repository)
@@ -71,8 +110,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val getBranchesUseCase  = GetBranchesUseCase(repository)
     private val createBranchUseCase = CreateBranchUseCase(repository)
 
+    /** Serializes all agent operations to prevent concurrent mutation of agent history. */
+    private val agentMutex  = Mutex()
+
+    /**
+     * Monotonically-increasing counter used to generate collision-free [ChatMessage.turnId] values.
+     * Seeded at the current epoch millis so it never collides with previously persisted ids
+     * (which were also millis-based) after process restart.
+     */
+    private val turnIdSource = AtomicLong(System.currentTimeMillis())
+
     // ── UI models ──────────────────────────────────────────────────────────────
 
+    /**
+     * A single user↔agent exchange shown as one row in the chat list.
+     *
+     * @property userMessage The user's input text.
+     * @property agentResponse The final assistant response text.
+     * @property tokenInfo Usage stats from the last API call in this turn.
+     * @property cost Estimated USD cost of this turn.
+     * @property durationSec Wall-clock seconds for the API call.
+     * @property lastMessageId The database id of the last [ChatMessage] in this turn;
+     *   used as a branch checkpoint when the user forks the conversation here.
+     */
     data class ChatTurn(
         val userMessage: String,
         val agentResponse: String,
@@ -82,20 +142,47 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val lastMessageId: Long? = null
     )
 
+    /**
+     * Aggregate session statistics displayed in the context usage bar.
+     *
+     * @property turnCount Total number of completed turns in the current view.
+     * @property totalCompletionTokens Sum of output tokens across all turns.
+     * @property totalCost Cumulative estimated USD cost of the session.
+     * @property contextTokens Total tokens reported by the last API call (prompt + completion).
+     * @property contextLimit Model-specific token limit used to compute [contextFraction].
+     */
     data class SessionStats(
         val turnCount: Int = 0,
         val totalCompletionTokens: Int = 0,
         val totalCost: Double = 0.0,
         val contextTokens: Int = 0,
-        val contextLimit: Int = CONTEXT_LIMIT
+        val contextLimit: Int = 128_000
     ) {
+        /** Fraction of the context window consumed; used to drive the progress bar width. */
         val contextFraction: Float
             get() = if (contextLimit > 0) contextTokens.toFloat() / contextLimit else 0f
     }
 
+    /** Discriminated union representing the state of the chat input/output area. */
     sealed class UiState {
+        /** No request in flight; the user can type and send. */
         object Idle : UiState()
+
+        /**
+         * A request is in flight.
+         *
+         * @property toolStatus Optional status string shown while a tool call is executing
+         *   (e.g. "Запрашиваю погоду..."). Null while waiting for the initial API response.
+         */
         data class Loading(val toolStatus: String? = null) : UiState()
+
+        /**
+         * The last request failed.
+         *
+         * @property message Human-readable error description.
+         * @property isContextOverflow True when the failure was caused by the model's context limit
+         *   being exceeded; the UI shows a specific overflow warning in this case.
+         */
         data class Error(val message: String, val isContextOverflow: Boolean = false) : UiState()
     }
 
@@ -107,28 +194,61 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _chatHistory = MutableStateFlow<List<ChatTurn>>(emptyList())
     val chatHistory: StateFlow<List<ChatTurn>> = _chatHistory.asStateFlow()
 
-    val sessionStats: StateFlow<SessionStats> = chatHistory
-        .map { turns ->
-            if (turns.isEmpty()) return@map SessionStats()
-            SessionStats(
-                turnCount             = turns.size,
-                totalCompletionTokens = turns.sumOf { it.tokenInfo?.completionTokens ?: 0 },
-                totalCost             = turns.sumOf { it.cost ?: 0.0 },
-                contextTokens         = turns.last().tokenInfo?.totalTokens ?: 0
-            )
-        }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SessionStats())
+    /**
+     * Aggregate session statistics derived from [chatHistory] and [selectedModel].
+     * Recomputed reactively when either flow changes so the context bar reflects the
+     * correct limit for the currently selected model.
+     */
+    val sessionStats: StateFlow<SessionStats> = combine(chatHistory, _selectedModel) { turns, model ->
+        val limit = contextLimitFor(model)
+        if (turns.isEmpty()) return@combine SessionStats(contextLimit = limit)
+        SessionStats(
+            turnCount             = turns.size,
+            totalCompletionTokens = turns.sumOf { it.tokenInfo?.completionTokens ?: 0 },
+            totalCost             = turns.sumOf { it.cost ?: 0.0 },
+            contextTokens         = turns.last().tokenInfo?.totalTokens ?: 0,
+            contextLimit          = limit
+        )
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SessionStats())
+
+    // ── Inference settings state (survives config changes) ─────────────────────
+
+    private val _selectedModel   = MutableStateFlow("deepseek-v4-flash")
+    val selectedModel: StateFlow<String>  = _selectedModel.asStateFlow()
+
+    private val _thinkingEnabled = MutableStateFlow(false)
+    val thinkingEnabled: StateFlow<Boolean> = _thinkingEnabled.asStateFlow()
+
+    private val _reasoningEffort = MutableStateFlow("medium")
+    val reasoningEffort: StateFlow<String> = _reasoningEffort.asStateFlow()
+
+    private val _maxTokensText   = MutableStateFlow("")
+    val maxTokensText: StateFlow<String>  = _maxTokensText.asStateFlow()
+
+    private val _temperatureText = MutableStateFlow("")
+    val temperatureText: StateFlow<String> = _temperatureText.asStateFlow()
+
+    fun setModel(model: String)              { _selectedModel.value   = model }
+    fun setThinkingEnabled(enabled: Boolean) { _thinkingEnabled.value = enabled }
+    fun setReasoningEffort(effort: String)   { _reasoningEffort.value = effort }
+    fun setMaxTokensText(text: String)       { _maxTokensText.value   = text }
+    fun setTemperatureText(text: String)     { _temperatureText.value = text }
 
     // ── Strategy state ─────────────────────────────────────────────────────────
 
     private val _currentStrategyType = MutableStateFlow(
-        StrategyType.valueOf(prefs.getString(KEY_STRATEGY, StrategyType.NONE.name)!!)
+        runCatching {
+            StrategyType.valueOf(prefs.getString(KEY_STRATEGY, StrategyType.NONE.name)!!)
+        }.getOrDefault(StrategyType.NONE)
     )
+
+    /** The strategy that is currently active in the agent (not the pending UI selection). */
     val currentStrategyType: StateFlow<StrategyType> = _currentStrategyType.asStateFlow()
 
     private val _keepLastN = MutableStateFlow(prefs.getInt(KEY_KEEP_LAST, DEFAULT_KEEP_LAST))
     val keepLastN: StateFlow<Int> = _keepLastN.asStateFlow()
 
+    /** Summary text (for SUMMARY strategy) or facts list (for STICKY_FACTS); null otherwise. */
     private val _auxData = MutableStateFlow<String?>(null)
     val auxData: StateFlow<String?> = _auxData.asStateFlow()
 
@@ -154,6 +274,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // ── Strategy management ────────────────────────────────────────────────────
 
+    /**
+     * Persists the new strategy settings and applies them to the agent.
+     *
+     * Waits for [agentMutex] before swapping the active strategy, so an in-progress
+     * [sendMessage] coroutine completes with the old strategy before the new one takes effect.
+     *
+     * @param type The new strategy to activate.
+     * @param keepLastN Window size for strategies that trim the history.
+     */
     fun applyStrategyConfig(type: StrategyType, keepLastN: Int) {
         prefs.edit()
             .putString(KEY_STRATEGY, type.name)
@@ -162,22 +291,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _currentStrategyType.value = type
         _keepLastN.value           = keepLastN
 
-        // Clear aux data that belongs to the previous strategy
         viewModelScope.launch {
-            when (type) {
-                StrategyType.SUMMARY      -> { clearFactsUseCase(); _auxData.value = (agent.strategy as? SummaryStrategy)?.summary }
-                StrategyType.STICKY_FACTS -> { clearSummaryUseCase(); _auxData.value = (agent.strategy as? StickyFactsStrategy)?.facts }
-                else                      -> { clearSummaryUseCase(); clearFactsUseCase(); _auxData.value = null }
+            // Wait for any in-progress agent.run() before swapping strategy
+            agentMutex.withLock {
+                when (type) {
+                    StrategyType.SUMMARY      -> { clearFactsUseCase(); _auxData.value = (agent.strategy as? SummaryStrategy)?.summary }
+                    StrategyType.STICKY_FACTS -> { clearSummaryUseCase(); _auxData.value = (agent.strategy as? StickyFactsStrategy)?.facts }
+                    else                      -> { clearSummaryUseCase(); clearFactsUseCase(); _auxData.value = null }
+                }
+                applyStrategy(type, keepLastN, restoreAux = false)
             }
-            applyStrategy(type, keepLastN, restoreAux = false)
         }
     }
 
+    /**
+     * Instantiates the correct [ContextStrategy] and assigns it to the agent.
+     *
+     * For SUMMARY and STICKY_FACTS strategies, wires up [ContextStrategy.onAuxDataUpdated]
+     * so auxiliary data is persisted to the database whenever the strategy updates it.
+     * When [restoreAux] is true, previously saved data is loaded from the database
+     * and injected into the new strategy instance (used on session restore).
+     */
     private suspend fun applyStrategy(type: StrategyType, n: Int, restoreAux: Boolean) {
         val newStrategy: ContextStrategy = when (type) {
             StrategyType.NONE           -> NoopStrategy()
             StrategyType.SLIDING_WINDOW -> SlidingWindowStrategy(n)
-            StrategyType.SUMMARY        -> SummaryStrategy(ApiClient.service, n).also { s ->
+            StrategyType.SUMMARY        -> SummaryStrategy(apiService, n).also { s ->
                 if (restoreAux) {
                     val saved = getSummaryUseCase()
                     s.summary = saved
@@ -190,7 +329,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
             }
-            StrategyType.STICKY_FACTS   -> StickyFactsStrategy(ApiClient.service, n).also { s ->
+            StrategyType.STICKY_FACTS   -> StickyFactsStrategy(apiService, n).also { s ->
                 if (restoreAux) {
                     val saved = getFactsUseCase()
                     s.facts = saved
@@ -210,46 +349,51 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // ── Send message ───────────────────────────────────────────────────────────
 
-    fun sendMessage(
-        userInput: String,
-        model: String,
-        maxTokens: Int?,
-        temperature: Double?,
-        thinkingEnabled: Boolean,
-        reasoningEffort: String?
-    ) {
+    /**
+     * Sends [userInput] to the agent and updates the chat history on success.
+     *
+     * Reads all inference settings from the ViewModel's own StateFlows (model, temperature, etc.)
+     * so the UI does not need to pass them as parameters. Acquires [agentMutex] to prevent
+     * interleaving with strategy changes or branch switches.
+     *
+     * On success the turn's messages are persisted and a new [ChatTurn] is appended to [chatHistory].
+     * On failure [UiState.Error] is set with the appropriate overflow flag.
+     */
+    fun sendMessage(userInput: String) {
+        val thinking = _thinkingEnabled.value
         agent.updateConfig(
             SimpleAgent.AgentConfig(
-                model           = model,
-                maxTokens       = maxTokens,
-                temperature     = temperature,
-                thinkingEnabled = thinkingEnabled,
-                reasoningEffort = reasoningEffort
+                model           = _selectedModel.value,
+                maxTokens       = _maxTokensText.value.toIntOrNull(),
+                temperature     = if (thinking) null else _temperatureText.value.toDoubleOrNull(),
+                thinkingEnabled = thinking,
+                reasoningEffort = _reasoningEffort.value.takeIf { thinking }
             )
         )
         agent.onToolCall = { status -> _uiState.value = UiState.Loading(toolStatus = status) }
 
         viewModelScope.launch {
-            _uiState.value = UiState.Loading()
+            agentMutex.withLock {
+                _uiState.value = UiState.Loading()
 
-            when (val result = agent.run(userInput)) {
-                is SimpleAgent.AgentResult.Success -> {
-                    val branchId = _activeBranchId.value
-                    saveTurnUseCase(result.turnMessages.toDomainMessages(result), branchId)
-                    val lastId = repository.getLastMessageIdForBranch(branchId)
-                    _chatHistory.value += ChatTurn(
-                        userMessage   = userInput,
-                        agentResponse = result.response,
-                        tokenInfo     = result.tokenInfo,
-                        cost          = result.cost,
-                        durationSec   = result.durationSec,
-                        lastMessageId = lastId
-                    )
-                    _uiState.value = UiState.Idle
-                }
-                is SimpleAgent.AgentResult.Failure -> {
-                    val isOverflow = sessionStats.value.contextFraction >= 0.90f
-                    _uiState.value = UiState.Error(result.error, isContextOverflow = isOverflow)
+                when (val result = agent.run(userInput)) {
+                    is SimpleAgent.AgentResult.Success -> {
+                        val branchId = _activeBranchId.value
+                        saveTurnUseCase(result.turnMessages.toDomainMessages(result), branchId)
+                        val lastId = repository.getLastMessageIdForBranch(branchId)
+                        _chatHistory.value += ChatTurn(
+                            userMessage   = userInput,
+                            agentResponse = result.response,
+                            tokenInfo     = result.tokenInfo,
+                            cost          = result.cost,
+                            durationSec   = result.durationSec,
+                            lastMessageId = lastId
+                        )
+                        _uiState.value = UiState.Idle
+                    }
+                    is SimpleAgent.AgentResult.Failure -> {
+                        _uiState.value = UiState.Error(result.error, isContextOverflow = result.isContextOverflow)
+                    }
                 }
             }
         }
@@ -257,7 +401,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // ── Branch management ──────────────────────────────────────────────────────
 
+    /**
+     * Creates a new branch forked from the current branch and immediately switches to it.
+     *
+     * Guards against creating a branch while a request is loading — if [UiState.Loading]
+     * is active the call is silently ignored to avoid race conditions with the agent.
+     *
+     * @param name User-visible label for the new branch.
+     * @param checkpointMessageId The [ChatTurn.lastMessageId] at the fork point.
+     *   Messages in the parent branch after this id will not be visible in the new branch.
+     */
     fun createBranch(name: String, checkpointMessageId: Long?) {
+        if (_uiState.value is UiState.Loading) return
         viewModelScope.launch {
             val parentId = _activeBranchId.value
             val newBranchId = createBranchUseCase(name, parentId, checkpointMessageId)
@@ -266,43 +421,65 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * Switches the active branch to [branchId].
+     *
+     * Acquires [agentMutex] before touching agent state. Reconstructs the full linear history
+     * from the branch tree, reloads it into the agent, and replaces [chatHistory] for the UI.
+     */
     fun switchBranch(branchId: Long) {
         viewModelScope.launch {
-            _activeBranchId.value = branchId
-            val fullHistory = reconstructBranchHistory(branchId)
-            agent.loadHistory(fullHistory.map { gson.fromJson(it.messageJson, Message::class.java) })
-            _chatHistory.value = fullHistory.toChatTurns()
+            agentMutex.withLock {
+                _activeBranchId.value = branchId
+                val fullHistory = reconstructBranchHistory(branchId)
+                agent.loadHistory(fullHistory.map { gson.fromJson(it.messageJson, Message::class.java) })
+                _chatHistory.value = fullHistory.toChatTurns()
+            }
         }
     }
 
     /**
-     * Walks up the branch tree and reconstructs the full message list:
-     * parent messages up to the checkpoint + this branch's own messages.
+     * Walks the branch ancestry tree from [startBranchId] up to the root, then folds the
+     * segments back down to produce a flat, ordered list of messages.
+     *
+     * Uses an iterative approach (not recursive) to avoid [StackOverflowError] on deep trees.
+     *
+     * At each segment boundary the checkpoint cut-off is applied: only messages from the parent
+     * branch with id ≤ [Branch.checkpointMessageId] are included.
      */
-    /**
-     * Recursively reconstructs the full message sequence for a branch:
-     * parent's history (filtered to the checkpoint) + this branch's own messages.
-     * Works at any depth.
-     */
-    private suspend fun reconstructBranchHistory(branchId: Long): List<ChatMessage> {
-        val branch = repository.getBranch(branchId) ?: return emptyList()
-        val ownMessages = repository.getMessagesForBranch(branchId)
+    private suspend fun reconstructBranchHistory(startBranchId: Long): List<ChatMessage> {
+        data class Segment(val messages: List<ChatMessage>, val checkpointMessageId: Long?)
 
-        if (branch.parentBranchId == null) return ownMessages
-
-        val parentHistory = reconstructBranchHistory(branch.parentBranchId)
-        val checkpointId  = branch.checkpointMessageId
-        val parentUpTo    = if (checkpointId != null) {
-            parentHistory.filter { it.id <= checkpointId }
-        } else {
-            parentHistory
+        val chain = mutableListOf<Segment>()
+        var currentId: Long? = startBranchId
+        while (currentId != null) {
+            val branch = repository.getBranch(currentId) ?: break
+            chain.add(Segment(repository.getMessagesForBranch(currentId), branch.checkpointMessageId))
+            currentId = branch.parentBranchId
         }
 
-        return parentUpTo + ownMessages
+        chain.reverse() // root first, leaf last
+
+        var result = emptyList<ChatMessage>()
+        for (segment in chain) {
+            val base = if (segment.checkpointMessageId != null) {
+                result.filter { it.id <= segment.checkpointMessageId }
+            } else {
+                result
+            }
+            result = base + segment.messages
+        }
+        return result
     }
 
     // ── New session ────────────────────────────────────────────────────────────
 
+    /**
+     * Clears all persisted chat data and resets the agent and UI to the initial empty state.
+     *
+     * Does not modify the active strategy settings — those are preserved in [prefs].
+     * Called only after the user confirms the reset dialog.
+     */
     fun newSession() {
         viewModelScope.launch {
             clearHistoryUseCase()
@@ -319,16 +496,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** Transitions [uiState] from [UiState.Error] back to [UiState.Idle]. */
     fun dismissError() { _uiState.value = UiState.Idle }
 
     // ── Restore history ────────────────────────────────────────────────────────
 
+    /**
+     * Loads persisted messages and restores the agent's history and UI on session resume.
+     *
+     * For Branching, history is reconstructed from the branch tree.
+     * For trimming strategies (SlidingWindow, Summary, StickyFacts), only the last [keepLastN]
+     * messages are loaded into the agent — older messages were already compressed or discarded
+     * by the strategy before they were written to the DB, so loading all of them would cause
+     * SummaryStrategy to re-summarize already-summarized content on the first request.
+     * For NONE strategy the full flat history is loaded.
+     */
     private suspend fun restoreHistory(branchId: Long) {
-        val saved = if (_currentStrategyType.value == StrategyType.BRANCHING) {
+        val all = if (_currentStrategyType.value == StrategyType.BRANCHING) {
             reconstructBranchHistory(branchId)
         } else {
             loadHistoryUseCase()
         }
+
+        val saved = when (_currentStrategyType.value) {
+            StrategyType.SLIDING_WINDOW,
+            StrategyType.SUMMARY,
+            StrategyType.STICKY_FACTS -> all.takeLast(_keepLastN.value)
+            else                      -> all
+        }
+
         if (saved.isEmpty()) return
         agent.loadHistory(saved.map { gson.fromJson(it.messageJson, Message::class.java) })
         _chatHistory.value = saved.toChatTurns()
@@ -336,10 +532,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // ── Mapping helpers ────────────────────────────────────────────────────────
 
+    /**
+     * Converts the raw [Message] list from a successful agent turn into [ChatMessage] domain objects.
+     *
+     * All messages in the turn share a single [ChatMessage.turnId] from [turnIdSource] so they can
+     * be grouped back into a [ChatTurn] on restore. Token stats and cost are set only on the last
+     * assistant message; timestamps are offset by index to preserve intra-turn ordering in the DB.
+     */
     private fun List<Message>.toDomainMessages(
         result: SimpleAgent.AgentResult.Success
     ): List<ChatMessage> {
-        val turnId = System.currentTimeMillis()
+        val turnId = turnIdSource.incrementAndGet()
         return mapIndexed { index, message ->
             val isLastAssistant = index == size - 1 && message.role == "assistant"
             ChatMessage(
@@ -358,6 +561,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * Groups a flat list of [ChatMessage]s by [ChatMessage.turnId] and converts each group
+     * into a [ChatTurn] for display.
+     *
+     * Groups without both a user and an assistant message are silently skipped (they represent
+     * incomplete turns or pure tool messages that have no visible bubble).
+     */
     private fun List<ChatMessage>.toChatTurns(): List<ChatTurn> =
         groupBy { it.turnId }
             .values

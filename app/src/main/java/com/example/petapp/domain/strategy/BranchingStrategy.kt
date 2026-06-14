@@ -4,9 +4,12 @@ import com.example.petapp.data.Message
 import com.example.petapp.domain.model.StrategyType
 
 /**
- * Branch management is driven entirely by the ViewModel (which branch is active,
- * how to reconstruct history from the branch tree, where to persist new messages).
- * From the Agent's perspective, history is always linear — so this strategy is a no-op.
+ * No-op strategy used when [StrategyType.BRANCHING] is active.
+ *
+ * Branch management is driven entirely by [com.example.petapp.ui.MainViewModel]:
+ * it decides which branch is active, reconstructs linear history from the branch tree,
+ * and persists new messages to the correct branch.
+ * From the agent's perspective, history is always linear — so this strategy is a no-op.
  */
 class BranchingStrategy : ContextStrategy {
     override val type = StrategyType.BRANCHING

@@ -3,8 +3,19 @@ package com.example.petapp.data
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 
+/**
+ * Catalogue of tool definitions sent to the DeepSeek API.
+ *
+ * Each tool is described by a name, a natural-language description (used by the model to decide
+ * when to call it), and a JSON-Schema object that specifies the expected argument types.
+ * Tools are disabled automatically when thinking mode is active (the API does not support
+ * function calling and extended reasoning simultaneously).
+ *
+ * Tool implementations live in [ToolExecutor].
+ */
 object ToolDefinitions {
 
+    /** Fetches current weather conditions for a given city via wttr.in. */
     val weatherTool = Tool(
         function = ToolFunction(
             name = "get_weather",
@@ -19,6 +30,7 @@ object ToolDefinitions {
         )
     )
 
+    /** Converts an amount between two ISO 4217 currencies via api.frankfurter.app. */
     val currencyTool = Tool(
         function = ToolFunction(
             name = "convert_currency",
@@ -35,6 +47,7 @@ object ToolDefinitions {
         )
     )
 
+    /** Searches the web via the Yandex XML Search API. Requires credentials in `local.properties`. */
     val searchTool = Tool(
         function = ToolFunction(
             name = "web_search",
@@ -49,6 +62,7 @@ object ToolDefinitions {
         )
     )
 
+    /** All available tools passed to the API in a single request. */
     val allTools = listOf(weatherTool, currencyTool, searchTool)
 
     private fun prop(type: String, description: String) = JsonObject().apply {

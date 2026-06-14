@@ -11,8 +11,18 @@ import com.example.petapp.data.local.SummaryEntity
 import com.example.petapp.domain.model.Branch
 import com.example.petapp.domain.model.ChatMessage
 import com.example.petapp.domain.repository.ChatRepository
+import javax.inject.Inject
 
-class ChatRepositoryImpl(
+/**
+ * Room-backed implementation of [ChatRepository].
+ *
+ * Each repository method is a thin delegation to the appropriate DAO, plus
+ * domain↔entity mapping via the private extension functions [toDomain] and [toEntity].
+ * All DAOs are suspend functions so callers must use coroutines.
+ *
+ * Injected as a `@Singleton` via [com.example.petapp.di.RepositoryModule].
+ */
+class ChatRepositoryImpl @Inject constructor(
     private val dao: ChatMessageDao,
     private val summaryDao: SummaryDao,
     private val stickyFactsDao: StickyFactsDao,
