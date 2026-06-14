@@ -1,6 +1,6 @@
 # AI Challenge — Android DeepSeek Agent
 
-Android-приложение на Kotlin + Jetpack Compose, реализующее простого LLM-агента поверх [DeepSeek API](https://platform.deepseek.com/).
+Android-приложение на Kotlin + Jetpack Compose, реализующее LLM-агента с инструментами поверх [DeepSeek API](https://platform.deepseek.com/).
 
 ## Что такое агент в этом приложении
 
@@ -8,24 +8,57 @@ Android-приложение на Kotlin + Jetpack Compose, реализующе
 
 - **помнит контекст** — хранит историю сообщений и передаёт её в каждом запросе, позволяя вести полноценный диалог
 - **инкапсулирует логику** — построение запроса, расчёт стоимости, обработка ошибок спрятаны внутри агента
-- **управляет конфигурацией** — модель, температура, thinking mode меняются через `AgentConfig`, не затрагивая UI
+- **умеет действовать** — сам решает когда и какой инструмент вызвать, выполняет его и возвращает результат в LLM
 
 ```
 SimpleAgent
-├── run(userInput)     — принимает сообщение пользователя
-├── step()            — выполняет один шаг: запрос → ответ → сохранение в историю
-├── buildRequest()    — собирает ChatRequest с полным контекстом
-├── calculateCost()   — считает стоимость по токенам
-└── reset()           — очищает память (новая сессия)
+├── run(userInput)     — принимает сообщение пользователя, запускает цикл
+├── agentLoop()        — LLM → tool call? → execute → LLM → ... → ответ
+├── buildRequest()     — собирает ChatRequest с историей и схемами инструментов
+├── calculateCost()    — считает стоимость по токенам
+└── reset()            — очищает память (новая сессия)
 ```
+
+## Агентный цикл (Agentic Loop)
+
+```
+Пользователь: "Какая погода в Ереване и сколько стоит 100 EUR в рублях?"
+       ↓
+  LLM думает: нужны инструменты
+       ↓
+  get_weather("Ереван")  +  convert_currency(100, "EUR", "RUB")
+       ↓
+  ToolExecutor выполняет запросы к внешним API
+       ↓
+  Результаты передаются обратно в LLM
+       ↓
+  LLM формирует финальный ответ пользователю
+```
+
+LLM сама решает, нужен ли инструмент, какой и с какими аргументами — это и есть агентность.
+
+## Инструменты
+
+| Инструмент | Что делает | API | Ключ |
+|---|---|---|---|
+| `get_weather` | Текущая погода для любого города | [Open-Meteo](https://open-meteo.com/) | не нужен |
+| `convert_currency` | Конвертация валют по актуальному курсу | [Frankfurter.app](https://www.frankfurter.app/) | не нужен |
+| `web_search` | Поиск актуальной информации в интернете | [Brave Search API](https://api.search.brave.com/) | нужен (бесплатный tier) |
+
+Инструменты автоматически отключаются в Thinking Mode, так как DeepSeek-R1 не поддерживает tool calls.
 
 ## Архитектура
 
 ```
 UI (MainActivity)
-    └── MainViewModel       — держит агента, управляет состоянием
-            └── SimpleAgent — ядро: память + LLM-логика
-                    └── DeepSeekApiService (Retrofit)
+    └── MainViewModel            — держит агента, управляет состоянием
+            └── SimpleAgent      — ядро: память + LLM-логика + цикл инструментов
+                    ├── DeepSeekApiService (Retrofit) — запросы к DeepSeek
+                    ├── ToolDefinitions               — JSON-схемы инструментов
+                    └── ToolExecutor                  — выполнение инструментов
+                            ├── Open-Meteo API        — погода
+                            ├── Frankfurter API       — валюты
+                            └── Brave Search API      — поиск
 ```
 
 ## Функции
@@ -33,15 +66,21 @@ UI (MainActivity)
 - Чат-интерфейс с историей диалога
 - Поддержка моделей `deepseek-v4-flash` и `deepseek-v4-pro`
 - Thinking Mode с выбором Reasoning Effort
-- Отображение токенов, стоимости и времени ответа под каждым сообщением
+- Инструменты: погода, конвертер валют, поиск в интернете
+- Статус активного инструмента отображается во время загрузки
+- Токены, стоимость и время ответа под каждым сообщением
 - Кнопка «Новая сессия» — сбрасывает память агента
 
 ## Настройка
 
-Добавь API-ключ в `local.properties`:
+Добавь ключи в `local.properties`:
 
-```
+```properties
 DEEPSEEK_API_KEY=sk-...
+
+# Опционально — для инструмента web_search
+# Бесплатный ключ: https://api.search.brave.com (2000 запросов/месяц)
+BRAVE_SEARCH_API_KEY=BSA...
 ```
 
 ## Стек
@@ -49,4 +88,4 @@ DEEPSEEK_API_KEY=sk-...
 - Kotlin, Jetpack Compose, Material3
 - Retrofit 2 + OkHttp + Gson
 - ViewModel + StateFlow (MVVM)
-- DeepSeek API
+- DeepSeek API, Open-Meteo, Frankfurter, Brave Search
