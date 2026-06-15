@@ -453,8 +453,10 @@ class MainViewModel @Inject constructor(
         data class Segment(val messages: List<ChatMessage>, val checkpointMessageId: Long?)
 
         val chain = mutableListOf<Segment>()
+        val visited = mutableSetOf<Long>()
         var currentId: Long? = startBranchId
         while (currentId != null) {
+            if (!visited.add(currentId)) break  // cycle guard: stop if we've seen this id before
             val branch = repository.getBranch(currentId) ?: break
             chain.add(Segment(repository.getMessagesForBranch(currentId), branch.checkpointMessageId))
             currentId = branch.parentBranchId

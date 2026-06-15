@@ -100,6 +100,18 @@ abstract class ChatDatabase : RoomDatabase() {
                     "chat_db"
                 )
                     .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                    .addCallback(object : RoomDatabase.Callback() {
+                        override fun onCreate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                            // Seed the root branch on fresh install.
+                            // MIGRATION_2_3 handles upgrades; this covers first-time installs
+                            // where Room creates the schema directly at version 3 (no migrations run).
+                            db.execSQL(
+                                "INSERT OR IGNORE INTO branches " +
+                                "(id, name, parent_branch_id, checkpoint_message_id, created_at) " +
+                                "VALUES (1, 'main', NULL, NULL, ${System.currentTimeMillis()})"
+                            )
+                        }
+                    })
                     .build()
                     .also { INSTANCE = it }
             }
