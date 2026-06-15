@@ -20,9 +20,7 @@ val yandexSearchKey  = localProperties.getProperty("YANDEX_SEARCH_KEY")  ?: ""
 
 android {
     namespace = "com.example.petapp"
-    compileSdk {
-        version = release(36)
-    }
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.example.petapp"
@@ -73,7 +71,6 @@ dependencies {
     implementation(libs.androidx.compose.ui.graphics)
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)
-    implementation(libs.androidx.material3)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

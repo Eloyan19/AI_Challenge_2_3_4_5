@@ -35,6 +35,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -588,7 +589,7 @@ fun ModelDropdown(models: List<String>, selected: String, onSelected: (String) -
             readOnly      = true,
             label         = { Text("Модель") },
             trailingIcon  = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-            modifier      = Modifier.fillMaxWidth().menuAnchor()
+            modifier      = Modifier.fillMaxWidth().menuAnchor(MenuAnchorType.PrimaryNotEditable)
         )
         ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             models.forEach { m ->
@@ -609,7 +610,7 @@ fun ReasoningEffortDropdown(efforts: List<String>, selected: String, onSelected:
             readOnly      = true,
             label         = { Text("Reasoning Effort") },
             trailingIcon  = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-            modifier      = Modifier.fillMaxWidth().menuAnchor()
+            modifier      = Modifier.fillMaxWidth().menuAnchor(MenuAnchorType.PrimaryNotEditable)
         )
         ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             efforts.forEach { e ->

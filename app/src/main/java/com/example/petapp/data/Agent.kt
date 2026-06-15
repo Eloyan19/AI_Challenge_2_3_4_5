@@ -170,7 +170,7 @@ class SimpleAgent @Inject constructor(
             val choice = response.choices?.firstOrNull()
 
             if (choice?.finishReason == "tool_calls") {
-                val message   = choice.message  ?: return AgentResult.Failure("Пустой ответ с tool_calls")
+                val message   = choice?.message ?: return AgentResult.Failure("Пустой ответ с tool_calls")
                 val toolCalls = message.toolCalls ?: return AgentResult.Failure("Нет tool_calls в сообщении")
 
                 history.add(message)

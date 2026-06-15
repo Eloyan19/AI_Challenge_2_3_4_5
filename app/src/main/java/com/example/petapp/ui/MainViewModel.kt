@@ -194,24 +194,9 @@ class MainViewModel @Inject constructor(
     private val _chatHistory = MutableStateFlow<List<ChatTurn>>(emptyList())
     val chatHistory: StateFlow<List<ChatTurn>> = _chatHistory.asStateFlow()
 
-    /**
-     * Aggregate session statistics derived from [chatHistory] and [selectedModel].
-     * Recomputed reactively when either flow changes so the context bar reflects the
-     * correct limit for the currently selected model.
-     */
-    val sessionStats: StateFlow<SessionStats> = combine(chatHistory, _selectedModel) { turns, model ->
-        val limit = contextLimitFor(model)
-        if (turns.isEmpty()) return@combine SessionStats(contextLimit = limit)
-        SessionStats(
-            turnCount             = turns.size,
-            totalCompletionTokens = turns.sumOf { it.tokenInfo?.completionTokens ?: 0 },
-            totalCost             = turns.sumOf { it.cost ?: 0.0 },
-            contextTokens         = turns.last().tokenInfo?.totalTokens ?: 0,
-            contextLimit          = limit
-        )
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SessionStats())
-
     // ── Inference settings state (survives config changes) ─────────────────────
+    // _selectedModel must be declared before sessionStats because sessionStats
+    // captures it in the combine() initializer.
 
     private val _selectedModel   = MutableStateFlow("deepseek-v4-flash")
     val selectedModel: StateFlow<String>  = _selectedModel.asStateFlow()
@@ -233,6 +218,23 @@ class MainViewModel @Inject constructor(
     fun setReasoningEffort(effort: String)   { _reasoningEffort.value = effort }
     fun setMaxTokensText(text: String)       { _maxTokensText.value   = text }
     fun setTemperatureText(text: String)     { _temperatureText.value = text }
+
+    /**
+     * Aggregate session statistics derived from [chatHistory] and [selectedModel].
+     * Recomputed reactively when either flow changes so the context bar reflects the
+     * correct limit for the currently selected model.
+     */
+    val sessionStats: StateFlow<SessionStats> = combine(chatHistory, _selectedModel) { turns, model ->
+        val limit = contextLimitFor(model)
+        if (turns.isEmpty()) return@combine SessionStats(contextLimit = limit)
+        SessionStats(
+            turnCount             = turns.size,
+            totalCompletionTokens = turns.sumOf { it.tokenInfo?.completionTokens ?: 0 },
+            totalCost             = turns.sumOf { it.cost ?: 0.0 },
+            contextTokens         = turns.last().tokenInfo?.totalTokens ?: 0,
+            contextLimit          = limit
+        )
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SessionStats())
 
     // ── Strategy state ─────────────────────────────────────────────────────────
 
