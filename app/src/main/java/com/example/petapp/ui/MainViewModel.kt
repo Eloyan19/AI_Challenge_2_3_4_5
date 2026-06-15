@@ -303,6 +303,11 @@ class MainViewModel @Inject constructor(
                 }
                 applyStrategy(type, keepLastN, restoreAux = false)
             }
+            // Branch loading happens outside the mutex — no agent interaction needed.
+            // Root branch (id=1) always exists in the DB, so this shows it immediately.
+            if (type == StrategyType.BRANCHING) {
+                _branches.value = getBranchesUseCase()
+            }
         }
     }
 
@@ -495,8 +500,15 @@ class MainViewModel @Inject constructor(
             _chatHistory.value    = emptyList()
             _auxData.value        = null
             _activeBranchId.value = MAIN_BRANCH_ID
-            _branches.value       = emptyList()
             _uiState.value        = UiState.Idle
+
+            // resetBranches() preserves branch id=1 (only deletes id != 1).
+            // Reload so the BranchBar shows the root branch immediately after reset.
+            _branches.value = if (_currentStrategyType.value == StrategyType.BRANCHING) {
+                getBranchesUseCase()
+            } else {
+                emptyList()
+            }
         }
     }
 

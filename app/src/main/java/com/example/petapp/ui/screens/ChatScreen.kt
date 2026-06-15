@@ -36,6 +36,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuAnchorType
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -43,6 +44,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -75,7 +77,6 @@ fun ChatScreen(navController: NavController, viewModel: MainViewModel) {
     val branches        by viewModel.branches.collectAsStateWithLifecycle()
     val activeBranchId  by viewModel.activeBranchId.collectAsStateWithLifecycle()
 
-    // Inference settings — survive configuration changes via ViewModel
     val selectedModel    by viewModel.selectedModel.collectAsStateWithLifecycle()
     val thinkingEnabled  by viewModel.thinkingEnabled.collectAsStateWithLifecycle()
     val reasoningEffort  by viewModel.reasoningEffort.collectAsStateWithLifecycle()
@@ -84,9 +85,8 @@ fun ChatScreen(navController: NavController, viewModel: MainViewModel) {
 
     val listState = rememberLazyListState()
 
-    // Ephemeral UI-only state
     var prompt           by remember { mutableStateOf("") }
-    var advancedExpanded by remember { mutableStateOf(false) }
+    var showApiSheet     by remember { mutableStateOf(false) }
     var showBranchDialog by remember { mutableStateOf(false) }
     var showResetDialog  by remember { mutableStateOf(false) }
     var newBranchName    by remember { mutableStateOf("") }
@@ -122,8 +122,8 @@ fun ChatScreen(navController: NavController, viewModel: MainViewModel) {
             text    = {
                 Column {
                     Text(
-                        text  = if (checkpointId != null) "Ветка от сообщения $checkpointId"
-                                else "Ветка от текущего конца истории",
+                        text  = if (checkpointId != null) "Ответвление от текущего сообщения"
+                                else "Ответвление от конца истории",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                     )
@@ -159,13 +159,15 @@ fun ChatScreen(navController: NavController, viewModel: MainViewModel) {
                 title = {
                     Column {
                         Text("AI Agent")
-                        if (strategyType != StrategyType.NONE) {
-                            Text(
-                                text  = strategyType.displayName,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        }
+                        val subtitle = buildList {
+                            add(selectedModel)
+                            if (strategyType != StrategyType.NONE) add(strategyType.displayName)
+                        }.joinToString(" · ")
+                        Text(
+                            text  = subtitle,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
+                        )
                     }
                 },
                 actions = {
@@ -174,6 +176,13 @@ fun ChatScreen(navController: NavController, viewModel: MainViewModel) {
                             checkpointId = chatHistory.lastOrNull()?.lastMessageId
                             showBranchDialog = true
                         }) { Text("⎇ Ветка") }
+                    }
+                    TextButton(onClick = { showApiSheet = true }) {
+                        Text(
+                            text  = "API",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
                     }
                     IconButton(onClick = { navController.navigate("context_settings") }) {
                         Icon(Icons.Default.Settings, contentDescription = "Контекст")
@@ -197,64 +206,6 @@ fun ChatScreen(navController: NavController, viewModel: MainViewModel) {
                 )
                 HorizontalDivider()
             }
-
-            // ── Model + inference settings ─────────────────────────────────────
-            Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
-                ModelDropdown(
-                    models     = listOf("deepseek-v4-flash", "deepseek-v4-pro"),
-                    selected   = selectedModel,
-                    onSelected = { viewModel.setModel(it) }
-                )
-                Spacer(Modifier.height(8.dp))
-                Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text("Thinking Mode", modifier = Modifier.weight(1f))
-                    Switch(
-                        checked         = thinkingEnabled,
-                        onCheckedChange = { viewModel.setThinkingEnabled(it) }
-                    )
-                }
-                if (thinkingEnabled) {
-                    Spacer(Modifier.height(8.dp))
-                    ReasoningEffortDropdown(
-                        efforts    = listOf("min", "low", "medium", "high", "max"),
-                        selected   = reasoningEffort,
-                        onSelected = { viewModel.setReasoningEffort(it) }
-                    )
-                }
-                TextButton(
-                    onClick        = { advancedExpanded = !advancedExpanded },
-                    contentPadding = PaddingValues(0.dp),
-                    modifier       = Modifier.align(Alignment.Start)
-                ) {
-                    Text(
-                        text  = if (advancedExpanded) "Скрыть ▲" else "Дополнительно ▼",
-                        style = MaterialTheme.typography.labelMedium
-                    )
-                }
-                if (advancedExpanded) {
-                    OutlinedTextField(
-                        value           = maxTokensText,
-                        onValueChange   = { viewModel.setMaxTokensText(it) },
-                        label           = { Text("Max Tokens") },
-                        modifier        = Modifier.fillMaxWidth(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        singleLine      = true
-                    )
-                    if (!thinkingEnabled) {
-                        Spacer(Modifier.height(8.dp))
-                        OutlinedTextField(
-                            value           = temperatureText,
-                            onValueChange   = { viewModel.setTemperatureText(it) },
-                            label           = { Text("Temperature") },
-                            modifier        = Modifier.fillMaxWidth(),
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                            singleLine      = true
-                        )
-                    }
-                }
-            }
-
-            HorizontalDivider()
 
             // ── Chat history ───────────────────────────────────────────────────
             LazyColumn(
@@ -354,6 +305,144 @@ fun ChatScreen(navController: NavController, viewModel: MainViewModel) {
                     contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp)
                 ) { Text("→") }
             }
+        }
+    }
+
+    // ── API settings bottom sheet ──────────────────────────────────────────────
+    if (showApiSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showApiSheet = false },
+            sheetState       = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ) {
+            ApiSettingsSheetContent(
+                selectedModel        = selectedModel,
+                thinkingEnabled      = thinkingEnabled,
+                reasoningEffort      = reasoningEffort,
+                maxTokensText        = maxTokensText,
+                temperatureText      = temperatureText,
+                onModelSelected      = { viewModel.setModel(it) },
+                onThinkingChanged    = { viewModel.setThinkingEnabled(it) },
+                onEffortSelected     = { viewModel.setReasoningEffort(it) },
+                onMaxTokensChanged   = { viewModel.setMaxTokensText(it) },
+                onTemperatureChanged = { viewModel.setTemperatureText(it) }
+            )
+        }
+    }
+}
+
+// ── API settings sheet content ─────────────────────────────────────────────────
+
+@Composable
+private fun ApiSettingsSheetContent(
+    selectedModel: String,
+    thinkingEnabled: Boolean,
+    reasoningEffort: String,
+    maxTokensText: String,
+    temperatureText: String,
+    onModelSelected: (String) -> Unit,
+    onThinkingChanged: (Boolean) -> Unit,
+    onEffortSelected: (String) -> Unit,
+    onMaxTokensChanged: (String) -> Unit,
+    onTemperatureChanged: (String) -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp)
+            .padding(bottom = 32.dp)
+    ) {
+        Text(
+            text       = "Настройки API",
+            style      = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold
+        )
+
+        Spacer(Modifier.height(16.dp))
+
+        // Model
+        Text(
+            text  = "Модель",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+        )
+        Spacer(Modifier.height(4.dp))
+        ModelDropdown(
+            models     = listOf("deepseek-v4-flash", "deepseek-v4-pro"),
+            selected   = selectedModel,
+            onSelected = onModelSelected
+        )
+
+        Spacer(Modifier.height(20.dp))
+        HorizontalDivider()
+        Spacer(Modifier.height(16.dp))
+
+        // Thinking mode
+        Row(
+            modifier          = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text       = "Thinking Mode",
+                    style      = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium
+                )
+                Text(
+                    text  = "Расширенные рассуждения. Отключает инструменты и temperature.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Switch(checked = thinkingEnabled, onCheckedChange = onThinkingChanged)
+        }
+
+        if (thinkingEnabled) {
+            Spacer(Modifier.height(12.dp))
+            Text(
+                text  = "Reasoning Effort",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+            )
+            Spacer(Modifier.height(4.dp))
+            ReasoningEffortDropdown(
+                efforts    = listOf("min", "low", "medium", "high", "max"),
+                selected   = reasoningEffort,
+                onSelected = onEffortSelected
+            )
+        }
+
+        Spacer(Modifier.height(20.dp))
+        HorizontalDivider()
+        Spacer(Modifier.height(16.dp))
+
+        // Advanced
+        Text(
+            text       = "Дополнительно",
+            style      = MaterialTheme.typography.labelMedium,
+            color      = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+        )
+        Spacer(Modifier.height(8.dp))
+
+        OutlinedTextField(
+            value           = maxTokensText,
+            onValueChange   = onMaxTokensChanged,
+            label           = { Text("Max Tokens (пусто = по умолчанию модели)") },
+            modifier        = Modifier.fillMaxWidth(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            singleLine      = true
+        )
+
+        if (!thinkingEnabled) {
+            Spacer(Modifier.height(10.dp))
+            OutlinedTextField(
+                value           = temperatureText,
+                onValueChange   = onTemperatureChanged,
+                label           = { Text("Temperature (0.0–2.0, пусто = по умолчанию)") },
+                modifier        = Modifier.fillMaxWidth(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                singleLine      = true
+            )
         }
     }
 }

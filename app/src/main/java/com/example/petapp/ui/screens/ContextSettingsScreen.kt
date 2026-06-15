@@ -13,6 +13,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -187,7 +189,44 @@ fun ContextSettingsScreen(
                 }
             }
 
-            Spacer(Modifier.height(24.dp))
+            Spacer(Modifier.height(16.dp))
+
+            // Explain what happens to history when switching strategies on the fly
+            if (selectedStrategy != currentStrategy) {
+                Card(
+                    colors  = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text(
+                            text  = "При смене стратегии:",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = when (selectedStrategy) {
+                                StrategyType.BRANCHING ->
+                                    "Текущая история станет веткой «main». Вы сможете создавать ответвления от любого сообщения."
+                                StrategyType.SLIDING_WINDOW ->
+                                    "Со следующего запроса ИИ будет видеть только последние $keepLastN сообщений. Ваша история в чате сохранится полностью."
+                                StrategyType.SUMMARY ->
+                                    "Старые сообщения будут сжаты в пересказ при следующем запросе. История в чате не изменится."
+                                StrategyType.STICKY_FACTS ->
+                                    "После следующего ответа будут извлечены ключевые факты диалога. История в чате не изменится."
+                                StrategyType.NONE ->
+                                    "Контекст сжиматься не будет. ИИ будет видеть всю историю на каждый запрос."
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer
+                        )
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+            }
 
             Button(
                 onClick = {
