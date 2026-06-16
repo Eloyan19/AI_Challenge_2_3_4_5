@@ -132,16 +132,15 @@ class MemoryLayersStrategy(
                 val end = it.lastIndexOf(']')
                 if (start >= 0 && end > start) it.substring(start, end + 1) else "[]"
             }
+            val array = org.json.JSONArray(cleaned)
+            val now = System.currentTimeMillis()
             val entries = mutableListOf<LongTermMemoryEntry>()
-            val objectPattern = Regex("""\{[^}]+\}""")
-            objectPattern.findAll(cleaned).forEach { match ->
-                val obj = match.value
-                val category = Regex(""""category"\s*:\s*"([^"]+)"""").find(obj)?.groupValues?.get(1) ?: return@forEach
-                val key = Regex(""""key"\s*:\s*"([^"]+)"""").find(obj)?.groupValues?.get(1) ?: return@forEach
-                val value = Regex(""""value"\s*:\s*"([^"]+)"""").find(obj)?.groupValues?.get(1) ?: return@forEach
-                if (key.isNotBlank() && value.isNotBlank()) {
-                    entries.add(LongTermMemoryEntry(category = category, keyName = key, value = value, createdAt = System.currentTimeMillis(), updatedAt = System.currentTimeMillis()))
-                }
+            for (i in 0 until array.length()) {
+                val obj = array.getJSONObject(i)
+                val category = obj.optString("category", "knowledge").ifBlank { "knowledge" }
+                val key   = obj.optString("key").takeIf   { it.isNotBlank() } ?: continue
+                val value = obj.optString("value").takeIf { it.isNotBlank() } ?: continue
+                entries.add(LongTermMemoryEntry(category = category, keyName = key, value = value, createdAt = now, updatedAt = now))
             }
             entries
         } catch (e: Exception) {
