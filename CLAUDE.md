@@ -241,6 +241,97 @@ REVIEWER + SECURITY + PERFORMANCE параллельно
 
 ---
 
+## Специфика проекта (знай перед любой задачей)
+
+### DeepSeek API
+
+**Модели:**
+- `deepseek-v4-flash` — быстрая, дешёвая ($0.14/M input, $0.28/M output), используется для фоновых задач (summary, facts extraction)
+- `deepseek-v4-pro` — умнее, дороже ($0.435/M input, $0.87/M output)
+- Cache-hit скидка: flash $0.0028, pro $0.003625 — кешируются повторяющиеся system-промпты
+
+**Ограничения API:**
+- Thinking Mode (`"thinking": {"type": "enabled"}`) **несовместим** с tools и с temperature — при thinking оба поля должны быть null/отсутствовать
+- Reasoning effort задаётся отдельным полем `reasoning_effort`, только когда thinking включён
+- Context window: 128K токенов для обеих моделей
+- `finish_reason == "tool_calls"` — модель хочет вызвать инструмент; `choice` при этом может быть nullable в Kotlin (Gson десериализует `Choice?`)
+
+**Инструменты:** `get_weather`, `convert_currency`, `web_search` — реализованы в `ToolExecutor.kt`, определения схем в `ToolDefinitions.kt`
+
+---
+
+### Room — схема БД (version = 3)
+
+```
+chat_messages   — история сообщений (branch_id FK → branches.id)
+branches        — дерево веток диалога
+conversation_summary — одна строка summary для SummaryStrategy
+sticky_facts    — одна строка фактов для StickyFactsStrategy
+```
+
+**История миграций:**
+- v1 → v2: добавлена таблица `conversation_summary`
+- v2 → v3: добавлен `branch_id` в `chat_messages`, созданы `branches` и `sticky_facts`, посеян root branch id=1
+
+**Важно:** `RoomDatabase.Callback.onCreate` сеет branch id=1 при свежей установке (v3 без миграций). `resetBranches()` удаляет только ветки с `id != 1` — root всегда остаётся.
+
+---
+
+### Стратегии управления контекстом
+
+| Стратегия | prepareContext | buildMessages | afterTurn |
+|---|---|---|---|
+| NoopStrategy | ничего | история as-is | ничего |
+| SlidingWindowStrategy | обрезает до keepLastN | история as-is | ничего |
+| SummaryStrategy | суммаризует лишние через LLM | prepend system-msg с summary | ничего |
+| StickyFactsStrategy | обрезает до keepLastN | prepend system-msg с фактами | извлекает факты через LLM |
+| BranchingStrategy | ничего | история as-is | ничего |
+
+- Summary и Facts хранятся в БД, восстанавливаются при `restoreAux = true`
+- При смене стратегии история агента **не сбрасывается** — новая стратегия работает с текущим состоянием
+- `onAuxDataUpdated` callback — единственный канал персистентности для Summary/Facts
+
+---
+
+### Branching — как работает
+
+```
+root branch (id=1, parentBranchId=null)
+  └─ messages [1, 2, 3, 4, 5]
+       └─ branch B (parentBranchId=1, checkpointMessageId=3)
+            └─ messages [6, 7]  ← только свои сообщения
+```
+
+`reconstructBranchHistory(B)` делает:
+1. Идёт вверх по дереву: B → root
+2. Разворачивает цепочку: root first
+3. Из root берёт messages с `id <= checkpointMessageId` (3)
+4. Добавляет messages ветки B (6, 7)
+5. Итог для ИИ: `[1, 2, 3, 6, 7]`
+
+Cycle guard (`visited` set) — защита от самоссылающихся веток в БД.
+
+---
+
+### Известные исправленные баги — не повторяй
+
+1. **`choice?.message` а не `choice.message`** в `Agent.kt:173` — Kotlin 2.0 не smart-cast-ит через `?.` в условии if
+2. **`menuAnchor(MenuAnchorType.PrimaryNotEditable)`** — в M3 1.3.0+ no-arg версия удалена
+3. **Порядок свойств в MainViewModel** — `_selectedModel` обязан быть объявлен ДО `sessionStats` (используется в `combine()` initializer)
+4. **`compileSdk = 36`** — НЕ `compileSdk { version = release(36) }` (новый блочный синтаксис ненадёжен)
+5. **Branch crash** — при отсутствии root branch в БД `reconstructBranchHistory` уходил в бесконечный цикл → OOM
+
+---
+
+### Среда сборки
+
+- SDK: `/root/android-sdk`
+- Java: openjdk-21-jdk-headless
+- AGP: 8.13.2 · Kotlin: 2.0.21 · KSP: 2.0.21-1.0.28 · Gradle: 8.13
+- API ключи: в `local.properties` (не в git) → `DEEPSEEK_API_KEY`, `YANDEX_SEARCH_USER`, `YANDEX_SEARCH_KEY`
+
+---
+
 ## Правила для главного Claude (оркестратора)
 
 1. Для задач с несколькими независимыми аспектами — **всегда** запускай агентов параллельно
