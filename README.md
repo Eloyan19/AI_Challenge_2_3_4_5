@@ -68,11 +68,13 @@ MainViewModel
                 ├── Frankfurter API
                 └── Yandex XML Search API
 
-Room DB (version 3)
+Room DB (version 4)
 ├── chat_messages        — история сообщений (+branch_id)
 ├── conversation_summary — LLM-пересказ (Summary strategy)
 ├── sticky_facts         — извлечённые факты (StickyFacts strategy)
-└── branches             — дерево веток (Branching strategy)
+├── branches             — дерево веток (Branching strategy)
+├── working_memory       — рабочая память сессии (MemoryLayers strategy)
+└── long_term_memory     — долговременная память между сессиями (MemoryLayers strategy)
 ```
 
 ## Стратегии управления контекстом
@@ -109,6 +111,39 @@ strategy.buildMessages      → [system: "Ключевые факты: • ..."]
 ```
 
 Хорошо подходит для диалогов, где важно помнить конкретные данные (имена, числа, решения), но не дословный ход беседы.
+
+### Memory Layers (Слои памяти)
+
+Явная трёхуровневая модель памяти ассистента. Каждый слой хранится отдельно и служит разной цели.
+
+```
+Каждый API-запрос собирается так:
+  [system: долговременная память]   ← Layer 3
+  [system: рабочая память]          ← Layer 2
+  [последние N сообщений]           ← Layer 1
+```
+
+**Layer 1 — Краткосрочная (short-term)**
+Последние N сообщений живого окна. Хранится только в оперативной памяти, очищается при сбросе сессии. Работает как sliding window: старые сообщения молча отбрасываются.
+
+**Layer 2 — Рабочая (working memory)**
+Текущая задача и контекст сессии, автоматически извлекаемые через `deepseek-v4-flash` после каждого хода. Содержит: что пользователь пытается сделать, активные сущности, контекст для следующего ответа. Персистируется в таблице `working_memory`, очищается при сбросе сессии.
+
+```
+strategy.afterTurn(history) → extractWorkingMemory() → working_memory (DB)
+strategy.buildMessages      → [system: "=== РАБОЧАЯ ПАМЯТЬ ===\n..."] + history[-N:]
+```
+
+**Layer 3 — Долговременная (long-term memory)**
+Профиль пользователя, важные предпочтения и решения. Единственный слой, который **не очищается при сбросе диалога** — живёт между сессиями. Категории: `profile`, `knowledge`, `decision`. Управляется явно: можно добавить вручную через диалог или извлечь из текущего диалога кнопкой (LLM-анализ).
+
+```
+strategy.buildMessages → [system: "=== ДОЛГОВРЕМЕННАЯ ПАМЯТЬ ===\n..."] + working + history
+```
+
+Экран **«Слои памяти»** (кнопка в настройках контекста) показывает все три слоя и позволяет добавлять / удалять записи долговременной памяти.
+
+**Поведение при смене стратегии:** при переключении с любой стратегии на другую агент сбрасывается и перезагружает историю из DB по правилам новой стратегии — контекст всегда консистентен.
 
 ### Branching (Ветвление)
 Позволяет создавать независимые ветки диалога от любой точки истории и переключаться между ними.
@@ -167,6 +202,6 @@ YANDEX_SEARCH_KEY=ключ_из_xml.yandex.com
 - Kotlin, Jetpack Compose, Material3
 - Retrofit 2 + OkHttp + Gson
 - ViewModel + StateFlow (MVVM + Clean Architecture)
-- Room v3 (chat_messages, summary, sticky_facts, branches)
-- Navigation Compose (chat ↔ context settings)
+- Room v4 (chat_messages, summary, sticky_facts, branches, working_memory, long_term_memory)
+- Navigation Compose (chat ↔ context settings ↔ memory layers)
 - DeepSeek API, wttr.in, Frankfurter, Yandex XML Search
