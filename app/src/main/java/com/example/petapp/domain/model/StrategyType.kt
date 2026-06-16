@@ -25,5 +25,11 @@ enum class StrategyType(val displayName: String) {
      * The user can fork the conversation at any checkpoint and explore independent
      * branches without context compression.
      */
-    BRANCHING("Ветвление")
+    BRANCHING("Ветвление"),
+
+    /**
+     * 3-layer memory: short-term (live window), working (current task, cleared on reset),
+     * long-term (profile/knowledge/decisions, persists across sessions).
+     */
+    MEMORY_LAYERS("Слои памяти")
 }

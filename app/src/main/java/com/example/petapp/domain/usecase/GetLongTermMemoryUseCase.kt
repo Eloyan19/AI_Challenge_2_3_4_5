@@ -1,0 +1,8 @@
+package com.example.petapp.domain.usecase
+
+import com.example.petapp.domain.model.LongTermMemoryEntry
+import com.example.petapp.domain.repository.ChatRepository
+
+class GetLongTermMemoryUseCase(private val repository: ChatRepository) {
+    suspend operator fun invoke(): List<LongTermMemoryEntry> = repository.getLongTermMemory()
+}

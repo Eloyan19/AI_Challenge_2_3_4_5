@@ -109,6 +109,9 @@ class SimpleAgent @Inject constructor(
     /** Replaces the current runtime configuration. Safe to call between turns. */
     fun updateConfig(newConfig: AgentConfig) { config = newConfig }
 
+    /** Returns a snapshot of the current history. Safe to call under [agentMutex]. */
+    fun historySnapshot(): List<Message> = history.toList()
+
     /**
      * Replaces the agent's in-memory history with [messages].
      * Called during session restore or when switching branches.

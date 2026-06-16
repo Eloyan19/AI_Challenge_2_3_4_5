@@ -20,6 +20,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
@@ -125,13 +126,22 @@ fun ContextSettingsScreen(
                 onSelect    = { settingsViewModel.selectStrategy(it) },
                 description = "Можно сохранить точку ветвления в диалоге, создавать независимые ветки и переключаться между ними. Контекст не сжимается."
             )
+            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+            StrategyOption(
+                type        = StrategyType.MEMORY_LAYERS,
+                selected    = selectedStrategy,
+                onSelect    = { settingsViewModel.selectStrategy(it) },
+                description = "3 слоя: краткосрочная (окно), рабочая (текущая задача, очищается при reset), долговременная (профиль, не очищается)."
+            )
 
             Spacer(Modifier.height(20.dp))
 
             if (selectedStrategy in listOf(
                     StrategyType.SLIDING_WINDOW,
                     StrategyType.SUMMARY,
-                    StrategyType.STICKY_FACTS
+                    StrategyType.STICKY_FACTS,
+                    StrategyType.MEMORY_LAYERS
                 )
             ) {
                 HorizontalDivider()
@@ -147,6 +157,7 @@ fun ContextSettingsScreen(
                         StrategyType.SLIDING_WINDOW -> "Хранить последних N сообщений — остальные отброшены."
                         StrategyType.SUMMARY        -> "Хранить последних N сообщений как есть, старые → summary."
                         StrategyType.STICKY_FACTS   -> "Отправлять последних N сообщений + блок фактов."
+                        StrategyType.MEMORY_LAYERS  -> "Краткосрочное окно: последние N сообщений отправляются в контексте."
                         else -> ""
                     },
                     style = MaterialTheme.typography.bodySmall,
@@ -168,12 +179,17 @@ fun ContextSettingsScreen(
             }
 
             if (selectedStrategy == currentStrategy && auxData != null &&
-                currentStrategy in listOf(StrategyType.SUMMARY, StrategyType.STICKY_FACTS)
+                currentStrategy in listOf(StrategyType.SUMMARY, StrategyType.STICKY_FACTS, StrategyType.MEMORY_LAYERS)
             ) {
                 Spacer(Modifier.height(16.dp))
                 HorizontalDivider()
                 Spacer(Modifier.height(8.dp))
-                val title = if (currentStrategy == StrategyType.SUMMARY) "Текущий summary" else "Текущие факты"
+                val title = when (currentStrategy) {
+                    StrategyType.SUMMARY       -> "Текущий summary"
+                    StrategyType.STICKY_FACTS  -> "Текущие факты"
+                    StrategyType.MEMORY_LAYERS -> "Рабочая память"
+                    else                       -> ""
+                }
                 Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(4.dp))
                 Surface(
@@ -186,6 +202,17 @@ fun ContextSettingsScreen(
                         style    = MaterialTheme.typography.bodySmall,
                         color    = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                }
+            }
+
+            // "Управление памятью" button — only when MEMORY_LAYERS is selected AND active
+            if (selectedStrategy == StrategyType.MEMORY_LAYERS && currentStrategy == StrategyType.MEMORY_LAYERS) {
+                Spacer(Modifier.height(12.dp))
+                OutlinedButton(
+                    onClick = { navController.navigate("memory_layers") },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Управление памятью")
                 }
             }
 
@@ -219,6 +246,8 @@ fun ContextSettingsScreen(
                                     "После следующего ответа будут извлечены ключевые факты диалога. История в чате не изменится."
                                 StrategyType.NONE ->
                                     "Контекст сжиматься не будет. ИИ будет видеть всю историю на каждый запрос."
+                                StrategyType.MEMORY_LAYERS ->
+                                    "Активируются 3 слоя памяти: краткосрочная (последние $keepLastN сообщений), рабочая (текущая задача) и долговременная (профиль). Рабочая память обновляется после каждого ответа."
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSecondaryContainer

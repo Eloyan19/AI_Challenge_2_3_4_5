@@ -4,12 +4,17 @@ import com.example.petapp.data.local.BranchDao
 import com.example.petapp.data.local.BranchEntity
 import com.example.petapp.data.local.ChatMessageDao
 import com.example.petapp.data.local.ChatMessageEntity
+import com.example.petapp.data.local.LongTermMemoryDao
+import com.example.petapp.data.local.LongTermMemoryEntity
 import com.example.petapp.data.local.StickyFactsDao
 import com.example.petapp.data.local.StickyFactsEntity
 import com.example.petapp.data.local.SummaryDao
 import com.example.petapp.data.local.SummaryEntity
+import com.example.petapp.data.local.WorkingMemoryDao
+import com.example.petapp.data.local.WorkingMemoryEntity
 import com.example.petapp.domain.model.Branch
 import com.example.petapp.domain.model.ChatMessage
+import com.example.petapp.domain.model.LongTermMemoryEntry
 import com.example.petapp.domain.repository.ChatRepository
 import javax.inject.Inject
 
@@ -26,7 +31,9 @@ class ChatRepositoryImpl @Inject constructor(
     private val dao: ChatMessageDao,
     private val summaryDao: SummaryDao,
     private val stickyFactsDao: StickyFactsDao,
-    private val branchDao: BranchDao
+    private val branchDao: BranchDao,
+    private val workingMemoryDao: WorkingMemoryDao,
+    private val longTermMemoryDao: LongTermMemoryDao
 ) : ChatRepository {
 
     // ── Linear history ──────────────────────────────────────────────────────────
@@ -99,6 +106,34 @@ class ChatRepositoryImpl @Inject constructor(
         branchDao.deleteAllExceptMain()
     }
 
+    // ── Working memory ────────────────────────────────────────────────────────────
+
+    override suspend fun getWorkingMemory(): String? = workingMemoryDao.get()?.content
+
+    override suspend fun saveWorkingMemory(content: String) =
+        workingMemoryDao.save(WorkingMemoryEntity(content = content, updatedAt = System.currentTimeMillis()))
+
+    override suspend fun clearWorkingMemory() = workingMemoryDao.clear()
+
+    // ── Long-term memory ──────────────────────────────────────────────────────────
+
+    override suspend fun getLongTermMemory(): List<LongTermMemoryEntry> =
+        longTermMemoryDao.getAll().map { it.toDomain() }
+
+    override suspend fun addLongTermMemory(category: String, keyName: String, value: String): Long =
+        longTermMemoryDao.insert(
+            LongTermMemoryEntity(
+                category  = category,
+                keyName   = keyName,
+                value     = value,
+                createdAt = System.currentTimeMillis(),
+                updatedAt = System.currentTimeMillis()
+            )
+        )
+
+    override suspend fun deleteLongTermMemory(id: Long) =
+        longTermMemoryDao.deleteById(id)
+
     // ── Mapping ──────────────────────────────────────────────────────────────────
 
     private fun ChatMessageEntity.toDomain() = ChatMessage(
@@ -120,5 +155,10 @@ class ChatRepositoryImpl @Inject constructor(
     private fun BranchEntity.toDomain() = Branch(
         id = id, name = name, parentBranchId = parentBranchId,
         checkpointMessageId = checkpointMessageId, createdAt = createdAt
+    )
+
+    private fun LongTermMemoryEntity.toDomain() = LongTermMemoryEntry(
+        id = id, category = category, keyName = keyName, value = value,
+        createdAt = createdAt, updatedAt = updatedAt
     )
 }

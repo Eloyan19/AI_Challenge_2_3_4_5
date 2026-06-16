@@ -4,8 +4,10 @@ import android.app.Application
 import com.example.petapp.data.local.BranchDao
 import com.example.petapp.data.local.ChatDatabase
 import com.example.petapp.data.local.ChatMessageDao
+import com.example.petapp.data.local.LongTermMemoryDao
 import com.example.petapp.data.local.StickyFactsDao
 import com.example.petapp.data.local.SummaryDao
+import com.example.petapp.data.local.WorkingMemoryDao
 import dagger.Module
 import dagger.Provides
 import javax.inject.Singleton
@@ -37,4 +39,10 @@ object DatabaseModule {
 
     @Provides
     fun provideBranchDao(db: ChatDatabase): BranchDao = db.branchDao()
+
+    @Provides
+    fun provideWorkingMemoryDao(db: ChatDatabase): WorkingMemoryDao = db.workingMemoryDao()
+
+    @Provides
+    fun provideLongTermMemoryDao(db: ChatDatabase): LongTermMemoryDao = db.longTermMemoryDao()
 }

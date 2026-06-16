@@ -2,15 +2,17 @@ package com.example.petapp.domain.repository
 
 import com.example.petapp.domain.model.Branch
 import com.example.petapp.domain.model.ChatMessage
+import com.example.petapp.domain.model.LongTermMemoryEntry
 
 /**
  * Persistence contract for all chat data.
  *
- * Grouped into four sections matching the four active context strategies:
+ * Grouped into five sections matching the active context strategies:
  * - **Linear history** — used by all strategies except Branching.
  * - **Summary** — auxiliary text for [com.example.petapp.domain.model.StrategyType.SUMMARY].
  * - **Sticky facts** — auxiliary text for [com.example.petapp.domain.model.StrategyType.STICKY_FACTS].
  * - **Branches** — tree of conversation forks for [com.example.petapp.domain.model.StrategyType.BRANCHING].
+ * - **Memory layers** — working and long-term memory for [com.example.petapp.domain.model.StrategyType.MEMORY_LAYERS].
  */
 interface ChatRepository {
 
@@ -83,4 +85,29 @@ interface ChatRepository {
 
     /** Deletes all non-main branches and their messages, leaving branch id = 1 intact. */
     suspend fun resetBranches()
+
+    // ── Working memory (MEMORY_LAYERS strategy) ────────────────────────────────
+
+    /** Returns the current working memory text, or null if not set. */
+    suspend fun getWorkingMemory(): String?
+
+    /** Overwrites the working memory singleton row with [content]. */
+    suspend fun saveWorkingMemory(content: String)
+
+    /** Deletes the working memory row. */
+    suspend fun clearWorkingMemory()
+
+    // ── Long-term memory (MEMORY_LAYERS strategy) ──────────────────────────────
+
+    /** Returns all long-term memory entries ordered by creation time ascending. */
+    suspend fun getLongTermMemory(): List<LongTermMemoryEntry>
+
+    /**
+     * Inserts a new long-term memory entry.
+     * @return The auto-generated id of the new entry.
+     */
+    suspend fun addLongTermMemory(category: String, keyName: String, value: String): Long
+
+    /** Deletes the long-term memory entry with the given [id]. */
+    suspend fun deleteLongTermMemory(id: Long)
 }

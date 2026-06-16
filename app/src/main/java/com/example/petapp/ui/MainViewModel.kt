@@ -8,25 +8,33 @@ import com.example.petapp.data.Message
 import com.example.petapp.data.SimpleAgent
 import com.example.petapp.domain.model.Branch
 import com.example.petapp.domain.model.ChatMessage
+import com.example.petapp.domain.model.LongTermMemoryEntry
 import com.example.petapp.domain.model.StrategyType
 import com.example.petapp.domain.repository.ChatRepository
 import com.example.petapp.domain.strategy.BranchingStrategy
 import com.example.petapp.domain.strategy.ContextStrategy
+import com.example.petapp.domain.strategy.MemoryLayersStrategy
 import com.example.petapp.domain.strategy.NoopStrategy
 import com.example.petapp.domain.strategy.SlidingWindowStrategy
 import com.example.petapp.domain.strategy.StickyFactsStrategy
 import com.example.petapp.domain.strategy.SummaryStrategy
+import com.example.petapp.domain.usecase.AddLongTermMemoryUseCase
 import com.example.petapp.domain.usecase.ClearFactsUseCase
 import com.example.petapp.domain.usecase.ClearHistoryUseCase
 import com.example.petapp.domain.usecase.ClearSummaryUseCase
+import com.example.petapp.domain.usecase.ClearWorkingMemoryUseCase
 import com.example.petapp.domain.usecase.CreateBranchUseCase
+import com.example.petapp.domain.usecase.DeleteLongTermMemoryUseCase
 import com.example.petapp.domain.usecase.GetBranchesUseCase
 import com.example.petapp.domain.usecase.GetFactsUseCase
+import com.example.petapp.domain.usecase.GetLongTermMemoryUseCase
 import com.example.petapp.domain.usecase.GetSummaryUseCase
+import com.example.petapp.domain.usecase.GetWorkingMemoryUseCase
 import com.example.petapp.domain.usecase.LoadHistoryUseCase
 import com.example.petapp.domain.usecase.SaveFactsUseCase
 import com.example.petapp.domain.usecase.SaveSummaryUseCase
 import com.example.petapp.domain.usecase.SaveTurnUseCase
+import com.example.petapp.domain.usecase.SaveWorkingMemoryUseCase
 import com.google.gson.Gson
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -110,8 +118,16 @@ class MainViewModel @Inject constructor(
     private val getBranchesUseCase  = GetBranchesUseCase(repository)
     private val createBranchUseCase = CreateBranchUseCase(repository)
 
+    // Memory layers use cases
+    private val getWorkingMemoryUseCase     = GetWorkingMemoryUseCase(repository)
+    private val saveWorkingMemoryUseCase    = SaveWorkingMemoryUseCase(repository)
+    private val clearWorkingMemoryUseCase   = ClearWorkingMemoryUseCase(repository)
+    private val getLongTermMemoryUseCase    = GetLongTermMemoryUseCase(repository)
+    private val addLongTermMemoryUseCase    = AddLongTermMemoryUseCase(repository)
+    private val deleteLongTermMemoryUseCase = DeleteLongTermMemoryUseCase(repository)
+
     /** Serializes all agent operations to prevent concurrent mutation of agent history. */
-    private val agentMutex  = Mutex()
+    val agentMutex  = Mutex()
 
     /**
      * Monotonically-increasing counter used to generate collision-free [ChatMessage.turnId] values.
@@ -250,9 +266,17 @@ class MainViewModel @Inject constructor(
     private val _keepLastN = MutableStateFlow(prefs.getInt(KEY_KEEP_LAST, DEFAULT_KEEP_LAST))
     val keepLastN: StateFlow<Int> = _keepLastN.asStateFlow()
 
-    /** Summary text (for SUMMARY strategy) or facts list (for STICKY_FACTS); null otherwise. */
+    /** Summary text (for SUMMARY strategy) or facts list (for STICKY_FACTS) or working memory (for MEMORY_LAYERS); null otherwise. */
     private val _auxData = MutableStateFlow<String?>(null)
     val auxData: StateFlow<String?> = _auxData.asStateFlow()
+
+    // ── Memory layers state ────────────────────────────────────────────────────
+
+    private val _longTermMemories = MutableStateFlow<List<LongTermMemoryEntry>>(emptyList())
+    val longTermMemories: StateFlow<List<LongTermMemoryEntry>> = _longTermMemories.asStateFlow()
+
+    private val _shortTermCount = MutableStateFlow(0)
+    val shortTermCount: StateFlow<Int> = _shortTermCount.asStateFlow()
 
     // ── Branch state ───────────────────────────────────────────────────────────
 
@@ -270,6 +294,9 @@ class MainViewModel @Inject constructor(
             restoreHistory(_activeBranchId.value)
             if (_currentStrategyType.value == StrategyType.BRANCHING) {
                 _branches.value = getBranchesUseCase()
+            }
+            if (_currentStrategyType.value == StrategyType.MEMORY_LAYERS) {
+                _longTermMemories.value = getLongTermMemoryUseCase()
             }
         }
     }
@@ -297,9 +324,10 @@ class MainViewModel @Inject constructor(
             // Wait for any in-progress agent.run() before swapping strategy
             agentMutex.withLock {
                 when (type) {
-                    StrategyType.SUMMARY      -> { clearFactsUseCase(); _auxData.value = (agent.strategy as? SummaryStrategy)?.summary }
-                    StrategyType.STICKY_FACTS -> { clearSummaryUseCase(); _auxData.value = (agent.strategy as? StickyFactsStrategy)?.facts }
-                    else                      -> { clearSummaryUseCase(); clearFactsUseCase(); _auxData.value = null }
+                    StrategyType.SUMMARY      -> { clearFactsUseCase(); clearWorkingMemoryUseCase(); _auxData.value = (agent.strategy as? SummaryStrategy)?.summary }
+                    StrategyType.STICKY_FACTS -> { clearSummaryUseCase(); clearWorkingMemoryUseCase(); _auxData.value = (agent.strategy as? StickyFactsStrategy)?.facts }
+                    StrategyType.MEMORY_LAYERS -> { clearSummaryUseCase(); clearFactsUseCase(); _auxData.value = (agent.strategy as? MemoryLayersStrategy)?.workingMemory }
+                    else                      -> { clearSummaryUseCase(); clearFactsUseCase(); clearWorkingMemoryUseCase(); _auxData.value = null }
                 }
                 applyStrategy(type, keepLastN, restoreAux = false)
             }
@@ -307,6 +335,9 @@ class MainViewModel @Inject constructor(
             // Root branch (id=1) always exists in the DB, so this shows it immediately.
             if (type == StrategyType.BRANCHING) {
                 _branches.value = getBranchesUseCase()
+            }
+            if (type == StrategyType.MEMORY_LAYERS) {
+                _longTermMemories.value = getLongTermMemoryUseCase()
             }
         }
     }
@@ -350,6 +381,22 @@ class MainViewModel @Inject constructor(
                 }
             }
             StrategyType.BRANCHING      -> BranchingStrategy()
+            StrategyType.MEMORY_LAYERS  -> MemoryLayersStrategy(apiService, n).also { s ->
+                val ltm = getLongTermMemoryUseCase()
+                _longTermMemories.value = ltm
+                s.longTermMemory = if (ltm.isEmpty()) null else ltm.joinToString("\n") { "[${it.category}] ${it.keyName}: ${it.value}" }
+                if (restoreAux) {
+                    val saved = getWorkingMemoryUseCase()
+                    s.workingMemory = saved
+                    _auxData.value = saved
+                }
+                s.onAuxDataUpdated = { text ->
+                    _auxData.value = text
+                    viewModelScope.launch {
+                        if (text != null) saveWorkingMemoryUseCase(text) else clearWorkingMemoryUseCase()
+                    }
+                }
+            }
         }
         agent.strategy = newStrategy
     }
@@ -396,6 +443,7 @@ class MainViewModel @Inject constructor(
                             durationSec   = result.durationSec,
                             lastMessageId = lastId
                         )
+                        _shortTermCount.value = agent.historySnapshot().size
                         _uiState.value = UiState.Idle
                     }
                     is SimpleAgent.AgentResult.Failure -> {
@@ -488,12 +536,14 @@ class MainViewModel @Inject constructor(
      *
      * Does not modify the active strategy settings — those are preserved in [prefs].
      * Called only after the user confirms the reset dialog.
+     * Note: long-term memory is NOT cleared on newSession() — it persists across sessions.
      */
     fun newSession() {
         viewModelScope.launch {
             clearHistoryUseCase()
             clearSummaryUseCase()
             clearFactsUseCase()
+            clearWorkingMemoryUseCase()
             repository.resetBranches()
 
             agent.reset()
@@ -501,6 +551,7 @@ class MainViewModel @Inject constructor(
             _auxData.value        = null
             _activeBranchId.value = MAIN_BRANCH_ID
             _uiState.value        = UiState.Idle
+            _shortTermCount.value = 0
 
             // resetBranches() preserves branch id=1 (only deletes id != 1).
             // Reload so the BranchBar shows the root branch immediately after reset.
@@ -521,10 +572,9 @@ class MainViewModel @Inject constructor(
      * Loads persisted messages and restores the agent's history and UI on session resume.
      *
      * For Branching, history is reconstructed from the branch tree.
-     * For trimming strategies (SlidingWindow, Summary, StickyFacts), only the last [keepLastN]
-     * messages are loaded into the agent — older messages were already compressed or discarded
-     * by the strategy before they were written to the DB, so loading all of them would cause
-     * SummaryStrategy to re-summarize already-summarized content on the first request.
+     * For trimming strategies (SlidingWindow, Summary, StickyFacts, MemoryLayers), only the last
+     * [keepLastN] messages are loaded into the agent — older messages were already compressed or
+     * discarded by the strategy before they were written to the DB.
      * For NONE strategy the full flat history is loaded.
      */
     private suspend fun restoreHistory(branchId: Long) {
@@ -537,13 +587,60 @@ class MainViewModel @Inject constructor(
         val saved = when (_currentStrategyType.value) {
             StrategyType.SLIDING_WINDOW,
             StrategyType.SUMMARY,
-            StrategyType.STICKY_FACTS -> all.takeLast(_keepLastN.value)
-            else                      -> all
+            StrategyType.STICKY_FACTS,
+            StrategyType.MEMORY_LAYERS -> all.takeLast(_keepLastN.value)
+            else                       -> all
         }
 
         if (saved.isEmpty()) return
         agent.loadHistory(saved.map { gson.fromJson(it.messageJson, Message::class.java) })
         _chatHistory.value = saved.toChatTurns()
+        _shortTermCount.value = saved.size
+    }
+
+    // ── Memory layers management ───────────────────────────────────────────────
+
+    /** Adds a new entry to long-term memory and refreshes the strategy's in-memory copy. */
+    fun addLongTermMemory(category: String, keyName: String, value: String) {
+        viewModelScope.launch {
+            addLongTermMemoryUseCase(category, keyName, value)
+            refreshLongTermMemories()
+        }
+    }
+
+    /** Deletes a long-term memory entry by id and refreshes the strategy's in-memory copy. */
+    fun deleteLongTermMemory(id: Long) {
+        viewModelScope.launch {
+            deleteLongTermMemoryUseCase(id)
+            refreshLongTermMemories()
+        }
+    }
+
+    /**
+     * Calls the LLM to extract long-term facts from the current conversation history,
+     * persists them, and refreshes the strategy's in-memory long-term memory text.
+     * Only works when MEMORY_LAYERS strategy is active.
+     */
+    fun extractLongTermFromHistory() {
+        viewModelScope.launch {
+            agentMutex.withLock {
+                val strategy = agent.strategy as? MemoryLayersStrategy ?: return@withLock
+                val history = agent.historySnapshot()
+                if (history.isNotEmpty()) {
+                    strategy.extractLongTermFacts(history)?.forEach { entry ->
+                        addLongTermMemoryUseCase(entry.category, entry.keyName, entry.value)
+                    }
+                    refreshLongTermMemories()
+                }
+            }
+        }
+    }
+
+    private suspend fun refreshLongTermMemories() {
+        val ltm = getLongTermMemoryUseCase()
+        _longTermMemories.value = ltm
+        val ltmText = if (ltm.isEmpty()) null else ltm.joinToString("\n") { "[${it.category}] ${it.keyName}: ${it.value}" }
+        (agent.strategy as? MemoryLayersStrategy)?.longTermMemory = ltmText
     }
 
     // ── Mapping helpers ────────────────────────────────────────────────────────
