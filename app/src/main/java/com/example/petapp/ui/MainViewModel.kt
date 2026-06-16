@@ -321,18 +321,19 @@ class MainViewModel @Inject constructor(
         _keepLastN.value           = keepLastN
 
         viewModelScope.launch {
-            // Wait for any in-progress agent.run() before swapping strategy
             agentMutex.withLock {
-                when (type) {
-                    StrategyType.SUMMARY      -> { clearFactsUseCase(); clearWorkingMemoryUseCase(); _auxData.value = (agent.strategy as? SummaryStrategy)?.summary }
-                    StrategyType.STICKY_FACTS -> { clearSummaryUseCase(); clearWorkingMemoryUseCase(); _auxData.value = (agent.strategy as? StickyFactsStrategy)?.facts }
-                    StrategyType.MEMORY_LAYERS -> { clearSummaryUseCase(); clearFactsUseCase(); _auxData.value = (agent.strategy as? MemoryLayersStrategy)?.workingMemory }
-                    else                      -> { clearSummaryUseCase(); clearFactsUseCase(); clearWorkingMemoryUseCase(); _auxData.value = null }
-                }
+                // Clear all aux data — each strategy starts fresh, old aux is irrelevant
+                clearSummaryUseCase()
+                clearFactsUseCase()
+                clearWorkingMemoryUseCase()
+                _auxData.value = null
                 applyStrategy(type, keepLastN, restoreAux = false)
+                // Reload history from DB under the new strategy's rules so the agent's
+                // in-memory context is consistent with what the new strategy expects.
+                agent.loadHistory(emptyList())
+                _shortTermCount.value = 0
+                restoreHistory(_activeBranchId.value)
             }
-            // Branch loading happens outside the mutex — no agent interaction needed.
-            // Root branch (id=1) always exists in the DB, so this shows it immediately.
             if (type == StrategyType.BRANCHING) {
                 _branches.value = getBranchesUseCase()
             }
