@@ -13,6 +13,7 @@ import com.example.petapp.ui.MainViewModel
 import com.example.petapp.ui.screens.ChatScreen
 import com.example.petapp.ui.screens.ContextSettingsScreen
 import com.example.petapp.ui.screens.MemoryLayersScreen
+import com.example.petapp.ui.screens.ProfilesScreen
 import com.example.petapp.ui.theme.PetAppTheme
 
 class MainActivity : ComponentActivity() {
@@ -37,6 +38,12 @@ class MainActivity : ComponentActivity() {
                         }
                         composable("memory_layers") {
                             MemoryLayersScreen(
+                                navController = navController,
+                                viewModel = chatViewModel
+                            )
+                        }
+                        composable("profiles") {
+                            ProfilesScreen(
                                 navController = navController,
                                 viewModel = chatViewModel
                             )

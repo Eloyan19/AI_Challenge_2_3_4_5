@@ -217,6 +217,23 @@ fun ContextSettingsScreen(
             }
 
             Spacer(Modifier.height(16.dp))
+            HorizontalDivider()
+            Spacer(Modifier.height(12.dp))
+
+            OutlinedButton(
+                onClick = { navController.navigate("profiles") },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Профили пользователя")
+            }
+            Text(
+                text = "Именованные наборы инструкций для ассистента. Активный профиль отправляется в каждый запрос.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                modifier = Modifier.padding(top = 4.dp)
+            )
+
+            Spacer(Modifier.height(16.dp))
 
             // Explain what happens to history when switching strategies on the fly
             if (selectedStrategy != currentStrategy) {

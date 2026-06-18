@@ -10,6 +10,7 @@ import com.example.petapp.domain.model.Branch
 import com.example.petapp.domain.model.ChatMessage
 import com.example.petapp.domain.model.LongTermMemoryEntry
 import com.example.petapp.domain.model.StrategyType
+import com.example.petapp.domain.model.UserProfile
 import com.example.petapp.domain.repository.ChatRepository
 import com.example.petapp.domain.strategy.BranchingStrategy
 import com.example.petapp.domain.strategy.ContextStrategy
@@ -25,13 +26,16 @@ import com.example.petapp.domain.usecase.ClearSummaryUseCase
 import com.example.petapp.domain.usecase.ClearWorkingMemoryUseCase
 import com.example.petapp.domain.usecase.CreateBranchUseCase
 import com.example.petapp.domain.usecase.DeleteLongTermMemoryUseCase
+import com.example.petapp.domain.usecase.DeleteProfileUseCase
 import com.example.petapp.domain.usecase.GetBranchesUseCase
 import com.example.petapp.domain.usecase.GetFactsUseCase
 import com.example.petapp.domain.usecase.GetLongTermMemoryUseCase
+import com.example.petapp.domain.usecase.GetProfilesUseCase
 import com.example.petapp.domain.usecase.GetSummaryUseCase
 import com.example.petapp.domain.usecase.GetWorkingMemoryUseCase
 import com.example.petapp.domain.usecase.LoadHistoryUseCase
 import com.example.petapp.domain.usecase.SaveFactsUseCase
+import com.example.petapp.domain.usecase.SaveProfileUseCase
 import com.example.petapp.domain.usecase.SaveSummaryUseCase
 import com.example.petapp.domain.usecase.SaveTurnUseCase
 import com.example.petapp.domain.usecase.SaveWorkingMemoryUseCase
@@ -91,6 +95,9 @@ class MainViewModel @Inject constructor(
         /** SharedPreferences key for the keep-last-N window size. */
         const val KEY_KEEP_LAST = "keep_last_n"
 
+        /** SharedPreferences key for the active user profile id (-1 = no active profile). */
+        const val KEY_ACTIVE_PROFILE = "active_profile_id"
+
         /** Database id of the permanent root branch that is always present. */
         const val MAIN_BRANCH_ID = 1L
 
@@ -125,6 +132,11 @@ class MainViewModel @Inject constructor(
     private val getLongTermMemoryUseCase    = GetLongTermMemoryUseCase(repository)
     private val addLongTermMemoryUseCase    = AddLongTermMemoryUseCase(repository)
     private val deleteLongTermMemoryUseCase = DeleteLongTermMemoryUseCase(repository)
+
+    // Profile use cases
+    private val getProfilesUseCase  = GetProfilesUseCase(repository)
+    private val saveProfileUseCase  = SaveProfileUseCase(repository)
+    private val deleteProfileUseCase = DeleteProfileUseCase(repository)
 
     /** Serializes all agent operations to prevent concurrent mutation of agent history. */
     val agentMutex  = Mutex()
@@ -278,6 +290,14 @@ class MainViewModel @Inject constructor(
     private val _shortTermCount = MutableStateFlow(0)
     val shortTermCount: StateFlow<Int> = _shortTermCount.asStateFlow()
 
+    // ── Profile state ──────────────────────────────────────────────────────────
+
+    private val _profiles = MutableStateFlow<List<UserProfile>>(emptyList())
+    val profiles: StateFlow<List<UserProfile>> = _profiles.asStateFlow()
+
+    private val _activeProfile = MutableStateFlow<UserProfile?>(null)
+    val activeProfile: StateFlow<UserProfile?> = _activeProfile.asStateFlow()
+
     // ── Branch state ───────────────────────────────────────────────────────────
 
     private val _branches = MutableStateFlow<List<Branch>>(emptyList())
@@ -290,6 +310,19 @@ class MainViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
+            // Restore active profile first so it's injected into the agent before history loads
+            val savedProfileId = prefs.getLong(KEY_ACTIVE_PROFILE, -1L)
+            if (savedProfileId != -1L) {
+                val profile = repository.getProfile(savedProfileId)
+                if (profile != null) {
+                    _activeProfile.value = profile
+                    agent.systemProfileInstructions = profile.instructions
+                } else {
+                    prefs.edit().remove(KEY_ACTIVE_PROFILE).apply()
+                }
+            }
+            _profiles.value = getProfilesUseCase()
+
             applyStrategy(_currentStrategyType.value, _keepLastN.value, restoreAux = true)
             restoreHistory(_activeBranchId.value)
             if (_currentStrategyType.value == StrategyType.BRANCHING) {
@@ -642,6 +675,57 @@ class MainViewModel @Inject constructor(
         _longTermMemories.value = ltm
         val ltmText = if (ltm.isEmpty()) null else ltm.joinToString("\n") { "[${it.category}] ${it.keyName}: ${it.value}" }
         (agent.strategy as? MemoryLayersStrategy)?.longTermMemory = ltmText
+    }
+
+    // ── Profile management ─────────────────────────────────────────────────────
+
+    /**
+     * Switches the active profile. Pass null to clear (no active profile).
+     * Resets working memory on switch (new profile = new context), keeps history and long-term memory.
+     */
+    fun switchProfile(profileId: Long?) {
+        viewModelScope.launch {
+            val profile = profileId?.let { repository.getProfile(it) }
+            prefs.edit().apply {
+                if (profile != null) putLong(KEY_ACTIVE_PROFILE, profile.id)
+                else remove(KEY_ACTIVE_PROFILE)
+            }.apply()
+
+            agentMutex.withLock {
+                agent.systemProfileInstructions = profile?.instructions
+                clearWorkingMemoryUseCase()
+                (agent.strategy as? MemoryLayersStrategy)?.workingMemory = null
+                _auxData.value = null
+            }
+            _activeProfile.value = profile
+        }
+    }
+
+    /** Creates a new profile or updates an existing one. Pass null [id] to create. */
+    fun saveProfile(id: Long?, name: String, instructions: String) {
+        viewModelScope.launch {
+            val savedId = saveProfileUseCase(id, name, instructions)
+            _profiles.value = getProfilesUseCase()
+            // If editing the active profile — update instructions in agent immediately
+            if (_activeProfile.value?.id == savedId) {
+                val updated = repository.getProfile(savedId)
+                _activeProfile.value = updated
+                agentMutex.withLock { agent.systemProfileInstructions = updated?.instructions }
+            }
+        }
+    }
+
+    /** Deletes a profile. If it was active — clears the active profile. */
+    fun deleteProfile(id: Long) {
+        viewModelScope.launch {
+            deleteProfileUseCase(id)
+            _profiles.value = getProfilesUseCase()
+            if (_activeProfile.value?.id == id) {
+                prefs.edit().remove(KEY_ACTIVE_PROFILE).apply()
+                _activeProfile.value = null
+                agentMutex.withLock { agent.systemProfileInstructions = null }
+            }
+        }
     }
 
     // ── Mapping helpers ────────────────────────────────────────────────────────

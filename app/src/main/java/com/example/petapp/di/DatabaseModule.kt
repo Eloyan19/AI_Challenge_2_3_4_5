@@ -7,6 +7,7 @@ import com.example.petapp.data.local.ChatMessageDao
 import com.example.petapp.data.local.LongTermMemoryDao
 import com.example.petapp.data.local.StickyFactsDao
 import com.example.petapp.data.local.SummaryDao
+import com.example.petapp.data.local.UserProfileDao
 import com.example.petapp.data.local.WorkingMemoryDao
 import dagger.Module
 import dagger.Provides
@@ -45,4 +46,7 @@ object DatabaseModule {
 
     @Provides
     fun provideLongTermMemoryDao(db: ChatDatabase): LongTermMemoryDao = db.longTermMemoryDao()
+
+    @Provides
+    fun provideUserProfileDao(db: ChatDatabase): UserProfileDao = db.userProfileDao()
 }

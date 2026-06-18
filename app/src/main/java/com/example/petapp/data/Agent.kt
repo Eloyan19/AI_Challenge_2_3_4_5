@@ -99,6 +99,9 @@ class SimpleAgent @Inject constructor(
     /** Active context management strategy; replace between turns to change behaviour. */
     var strategy: ContextStrategy = NoopStrategy()
 
+    /** Instructions from the active user profile; injected as first system message in every request. */
+    var systemProfileInstructions: String? = null
+
     /** Called with a UI-friendly status string whenever a tool invocation begins. */
     var onToolCall: ((String) -> Unit)? = null
 
@@ -208,17 +211,23 @@ class SimpleAgent @Inject constructor(
     }
 
     /** Builds the [ChatRequest] from current [config], [history], and [strategy]. */
-    private fun buildRequest() = ChatRequest(
-        model    = config.model,
-        messages = strategy.buildMessages(history),
-        maxTokens   = config.maxTokens,
-        temperature = if (config.thinkingEnabled) null else config.temperature,
-        thinking    = if (config.thinkingEnabled) Thinking("enabled") else null,
-        reasoningEffort = if (config.thinkingEnabled && !config.reasoningEffort.isNullOrBlank())
-            config.reasoningEffort else null,
-        tools      = if (!config.thinkingEnabled) ToolDefinitions.allTools else null,
-        toolChoice = if (!config.thinkingEnabled) "auto" else null
-    )
+    private fun buildRequest(): ChatRequest {
+        val strategyMessages = strategy.buildMessages(history)
+        val messages = systemProfileInstructions?.let { instructions ->
+            listOf(Message(role = "system", content = "=== ИНСТРУКЦИИ ПРОФИЛЯ ===\n$instructions")) + strategyMessages
+        } ?: strategyMessages
+        return ChatRequest(
+            model    = config.model,
+            messages = messages,
+            maxTokens   = config.maxTokens,
+            temperature = if (config.thinkingEnabled) null else config.temperature,
+            thinking    = if (config.thinkingEnabled) Thinking("enabled") else null,
+            reasoningEffort = if (config.thinkingEnabled && !config.reasoningEffort.isNullOrBlank())
+                config.reasoningEffort else null,
+            tools      = if (!config.thinkingEnabled) ToolDefinitions.allTools else null,
+            toolChoice = if (!config.thinkingEnabled) "auto" else null
+        )
+    }
 
     private fun toolDisplayName(name: String) = when (name) {
         "get_weather"      -> "Запрашиваю погоду..."

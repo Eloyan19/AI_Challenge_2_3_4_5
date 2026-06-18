@@ -10,11 +10,14 @@ import com.example.petapp.data.local.StickyFactsDao
 import com.example.petapp.data.local.StickyFactsEntity
 import com.example.petapp.data.local.SummaryDao
 import com.example.petapp.data.local.SummaryEntity
+import com.example.petapp.data.local.UserProfileDao
+import com.example.petapp.data.local.UserProfileEntity
 import com.example.petapp.data.local.WorkingMemoryDao
 import com.example.petapp.data.local.WorkingMemoryEntity
 import com.example.petapp.domain.model.Branch
 import com.example.petapp.domain.model.ChatMessage
 import com.example.petapp.domain.model.LongTermMemoryEntry
+import com.example.petapp.domain.model.UserProfile
 import com.example.petapp.domain.repository.ChatRepository
 import javax.inject.Inject
 
@@ -33,7 +36,8 @@ class ChatRepositoryImpl @Inject constructor(
     private val stickyFactsDao: StickyFactsDao,
     private val branchDao: BranchDao,
     private val workingMemoryDao: WorkingMemoryDao,
-    private val longTermMemoryDao: LongTermMemoryDao
+    private val longTermMemoryDao: LongTermMemoryDao,
+    private val userProfileDao: UserProfileDao
 ) : ChatRepository {
 
     // ── Linear history ──────────────────────────────────────────────────────────
@@ -134,6 +138,29 @@ class ChatRepositoryImpl @Inject constructor(
     override suspend fun deleteLongTermMemory(id: Long) =
         longTermMemoryDao.deleteById(id)
 
+    // ── User profiles ─────────────────────────────────────────────────────────────
+
+    override suspend fun getProfiles(): List<UserProfile> =
+        userProfileDao.getAll().map { it.toDomain() }
+
+    override suspend fun getProfile(id: Long): UserProfile? =
+        userProfileDao.getById(id)?.toDomain()
+
+    override suspend fun saveProfile(id: Long?, name: String, instructions: String): Long {
+        val now = System.currentTimeMillis()
+        return if (id == null) {
+            userProfileDao.insert(UserProfileEntity(name = name, instructions = instructions, createdAt = now))
+        } else {
+            val existing = userProfileDao.getById(id)
+            val entity = existing?.copy(name = name, instructions = instructions)
+                ?: UserProfileEntity(id = id, name = name, instructions = instructions, createdAt = now)
+            userProfileDao.update(entity)
+            id
+        }
+    }
+
+    override suspend fun deleteProfile(id: Long) = userProfileDao.deleteById(id)
+
     // ── Mapping ──────────────────────────────────────────────────────────────────
 
     private fun ChatMessageEntity.toDomain() = ChatMessage(
@@ -160,5 +187,9 @@ class ChatRepositoryImpl @Inject constructor(
     private fun LongTermMemoryEntity.toDomain() = LongTermMemoryEntry(
         id = id, category = category, keyName = keyName, value = value,
         createdAt = createdAt, updatedAt = updatedAt
+    )
+
+    private fun UserProfileEntity.toDomain() = UserProfile(
+        id = id, name = name, instructions = instructions, createdAt = createdAt
     )
 }

@@ -68,13 +68,14 @@ MainViewModel
                 ├── Frankfurter API
                 └── Yandex XML Search API
 
-Room DB (version 4)
+Room DB (version 5)
 ├── chat_messages        — история сообщений (+branch_id)
 ├── conversation_summary — LLM-пересказ (Summary strategy)
 ├── sticky_facts         — извлечённые факты (StickyFacts strategy)
 ├── branches             — дерево веток (Branching strategy)
 ├── working_memory       — рабочая память сессии (MemoryLayers strategy)
-└── long_term_memory     — долговременная память между сессиями (MemoryLayers strategy)
+├── long_term_memory     — долговременная память между сессиями (MemoryLayers strategy)
+└── user_profiles        — именованные профили с инструкциями для ассистента
 ```
 
 ## Стратегии управления контекстом
@@ -202,6 +203,6 @@ YANDEX_SEARCH_KEY=ключ_из_xml.yandex.com
 - Kotlin, Jetpack Compose, Material3
 - Retrofit 2 + OkHttp + Gson
 - ViewModel + StateFlow (MVVM + Clean Architecture)
-- Room v4 (chat_messages, summary, sticky_facts, branches, working_memory, long_term_memory)
-- Navigation Compose (chat ↔ context settings ↔ memory layers)
+- Room v5 (chat_messages, summary, sticky_facts, branches, working_memory, long_term_memory, user_profiles)
+- Navigation Compose (chat ↔ context settings ↔ memory layers ↔ profiles)
 - DeepSeek API, wttr.in, Frankfurter, Yandex XML Search

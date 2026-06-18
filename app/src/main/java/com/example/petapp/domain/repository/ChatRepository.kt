@@ -3,6 +3,7 @@ package com.example.petapp.domain.repository
 import com.example.petapp.domain.model.Branch
 import com.example.petapp.domain.model.ChatMessage
 import com.example.petapp.domain.model.LongTermMemoryEntry
+import com.example.petapp.domain.model.UserProfile
 
 /**
  * Persistence contract for all chat data.
@@ -110,4 +111,21 @@ interface ChatRepository {
 
     /** Deletes the long-term memory entry with the given [id]. */
     suspend fun deleteLongTermMemory(id: Long)
+
+    // ── User profiles ──────────────────────────────────────────────────────────
+
+    /** Returns all saved user profiles ordered by creation time. */
+    suspend fun getProfiles(): List<UserProfile>
+
+    /** Returns the profile with the given [id], or null if not found. */
+    suspend fun getProfile(id: Long): UserProfile?
+
+    /**
+     * Creates a new profile if [id] is null; updates the existing one otherwise.
+     * @return The id of the created or updated profile.
+     */
+    suspend fun saveProfile(id: Long?, name: String, instructions: String): Long
+
+    /** Deletes the profile with the given [id]. */
+    suspend fun deleteProfile(id: Long)
 }

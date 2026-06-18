@@ -16,6 +16,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
  *   `branches` and `sticky_facts` tables, and seeded the root main branch (id = 1).
  * - v3 → v4 ([MIGRATION_3_4]): added `working_memory` and `long_term_memory` tables for the
  *   MemoryLayers strategy.
+ * - v4 → v5 ([MIGRATION_4_5]): added `user_profiles` table for named user instruction sets.
  *
  * Obtained via [getInstance] which guarantees a single instance per process using
  * double-checked locking. Provided to DI via [com.example.petapp.di.DatabaseModule].
@@ -28,8 +29,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         StickyFactsEntity::class,
         WorkingMemoryEntity::class,
         LongTermMemoryEntity::class,
+        UserProfileEntity::class,
     ],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 abstract class ChatDatabase : RoomDatabase() {
@@ -40,6 +42,7 @@ abstract class ChatDatabase : RoomDatabase() {
     abstract fun stickyFactsDao(): StickyFactsDao
     abstract fun workingMemoryDao(): WorkingMemoryDao
     abstract fun longTermMemoryDao(): LongTermMemoryDao
+    abstract fun userProfileDao(): UserProfileDao
 
     companion object {
         @Volatile
@@ -108,6 +111,17 @@ abstract class ChatDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `user_profiles` " +
+                    "(`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                    "`name` TEXT NOT NULL, `instructions` TEXT NOT NULL, " +
+                    "`created_at` INTEGER NOT NULL)"
+                )
+            }
+        }
+
         /**
          * Returns the singleton [ChatDatabase] instance, creating it on first call.
          *
@@ -122,7 +136,7 @@ abstract class ChatDatabase : RoomDatabase() {
                     ChatDatabase::class.java,
                     "chat_db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                     .addCallback(object : RoomDatabase.Callback() {
                         override fun onCreate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
                             // Seed the root branch on fresh install.
