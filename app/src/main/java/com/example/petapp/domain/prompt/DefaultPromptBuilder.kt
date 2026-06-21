@@ -4,8 +4,9 @@ import com.example.petapp.domain.model.AgentRole
 import com.example.petapp.domain.model.LlmRequest
 import com.example.petapp.domain.model.Message
 import com.example.petapp.domain.model.TaskState
+import javax.inject.Inject
 
-class DefaultPromptBuilder : PromptBuilder {
+class DefaultPromptBuilder @Inject constructor() : PromptBuilder {
 
     override fun build(
         role: AgentRole,

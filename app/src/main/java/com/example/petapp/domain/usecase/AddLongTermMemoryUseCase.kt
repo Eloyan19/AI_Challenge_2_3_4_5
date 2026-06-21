@@ -1,8 +1,9 @@
 package com.example.petapp.domain.usecase
 
 import com.example.petapp.domain.repository.ChatRepository
+import javax.inject.Inject
 
-class AddLongTermMemoryUseCase(private val repository: ChatRepository) {
+class AddLongTermMemoryUseCase @Inject constructor(private val repository: ChatRepository) {
     suspend operator fun invoke(category: String, keyName: String, value: String) =
         repository.addLongTermMemory(category, keyName, value)
 }

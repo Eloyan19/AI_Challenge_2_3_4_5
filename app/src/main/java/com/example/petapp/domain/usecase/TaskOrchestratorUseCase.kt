@@ -4,8 +4,9 @@ import com.example.petapp.domain.model.AgentRole
 import com.example.petapp.domain.model.LlmProviderConfig
 import com.example.petapp.domain.model.Message
 import com.example.petapp.domain.model.TaskState
+import javax.inject.Inject
 
-class TaskOrchestratorUseCase(
+class TaskOrchestratorUseCase @Inject constructor(
     private val detectComplexity: DetectComplexityUseCase,
     private val runSwarm: RunAgentSwarmUseCase,
     @Suppress("UNUSED_PARAMETER") providerConfig: LlmProviderConfig

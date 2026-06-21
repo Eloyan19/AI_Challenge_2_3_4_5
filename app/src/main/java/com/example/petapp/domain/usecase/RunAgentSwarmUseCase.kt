@@ -9,8 +9,9 @@ import com.example.petapp.domain.model.TaskState
 import com.example.petapp.domain.prompt.PromptBuilder
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import javax.inject.Inject
 
-class RunAgentSwarmUseCase(
+class RunAgentSwarmUseCase @Inject constructor(
     private val llmService: LlmService,
     private val promptBuilder: PromptBuilder,
     private val providerConfig: LlmProviderConfig

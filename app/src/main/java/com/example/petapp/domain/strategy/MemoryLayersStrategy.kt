@@ -7,6 +7,8 @@ import com.example.petapp.domain.model.LlmRequest
 import com.example.petapp.domain.model.LongTermMemoryEntry
 import com.example.petapp.domain.model.Message
 import com.example.petapp.domain.model.StrategyType
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
 
 /**
  * 3-layer memory strategy:
@@ -17,19 +19,22 @@ import com.example.petapp.domain.model.StrategyType
 class MemoryLayersStrategy(
     private val llmService: LlmService,
     private val providerConfig: LlmProviderConfig,
-    var shortTermWindow: Int = 8
+    var shortTermWindow: Int = 8,
+    private val gson: Gson = Gson()
 ) : ContextStrategy {
 
     override val type = StrategyType.MEMORY_LAYERS
 
-    // Layer 2: Working memory
+    // Layer 2: Working memory — only set externally via restoreWorkingMemory(); internally via afterTurn/reset.
     private var _workingMemory: String? = null
-    var workingMemory: String?
-        get() = _workingMemory
-        set(v) { _workingMemory = v }
+    val workingMemory: String? get() = _workingMemory
 
-    // Layer 3: Long-term memory (injected externally, read-only in strategy)
-    var longTermMemory: String? = null
+    fun restoreWorkingMemory(value: String?) { _workingMemory = value }
+
+    // Layer 3: Long-term memory — injected externally, read-only inside strategy logic.
+    private var _longTermMemory: String? = null
+
+    fun setLongTermMemory(value: String?) { _longTermMemory = value }
 
     override val auxData: String? get() = _workingMemory
     override var onAuxDataUpdated: ((String?) -> Unit)? = null
@@ -42,7 +47,7 @@ class MemoryLayersStrategy(
     // Build: [long-term system] + [working system] + [short-term messages]
     override fun buildMessages(history: List<Message>): List<Message> {
         val prefix = mutableListOf<Message>()
-        longTermMemory?.let {
+        _longTermMemory?.let {
             prefix.add(Message(role = "system", content = "=== ДОЛГОВРЕМЕННАЯ ПАМЯТЬ (профиль и знания пользователя) ===\n$it"))
         }
         _workingMemory?.let {
@@ -126,24 +131,24 @@ class MemoryLayersStrategy(
         return sb.toString()
     }
 
+    private data class LtmJsonEntry(val category: String?, val key: String?, val value: String?)
+
     private fun parseLongTermFacts(json: String): List<LongTermMemoryEntry> {
+        val cleaned = json.trim().let {
+            val start = it.indexOf('['); val end = it.lastIndexOf(']')
+            if (start >= 0 && end > start) it.substring(start, end + 1) else "[]"
+        }
         return try {
-            val cleaned = json.trim().let {
-                val start = it.indexOf('[')
-                val end = it.lastIndexOf(']')
-                if (start >= 0 && end > start) it.substring(start, end + 1) else "[]"
-            }
-            val array = org.json.JSONArray(cleaned)
-            val now = System.currentTimeMillis()
-            val entries = mutableListOf<LongTermMemoryEntry>()
-            for (i in 0 until array.length()) {
-                val obj = array.getJSONObject(i)
-                val category = obj.optString("category", "knowledge").ifBlank { "knowledge" }
-                val key   = obj.optString("key").takeIf   { it.isNotBlank() } ?: continue
-                val value = obj.optString("value").takeIf { it.isNotBlank() } ?: continue
-                entries.add(LongTermMemoryEntry(category = category, keyName = key, value = value, createdAt = now, updatedAt = now))
-            }
-            entries
+            val type = object : TypeToken<List<LtmJsonEntry>>() {}.type
+            gson.fromJson<List<LtmJsonEntry>>(cleaned, type)
+                .orEmpty()
+                .mapNotNull { entry ->
+                    val key   = entry.key?.takeIf   { it.isNotBlank() } ?: return@mapNotNull null
+                    val value = entry.value?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                    val cat   = entry.category?.ifBlank { "knowledge" } ?: "knowledge"
+                    val now   = System.currentTimeMillis()
+                    LongTermMemoryEntry(category = cat, keyName = key, value = value, createdAt = now, updatedAt = now)
+                }
         } catch (e: Exception) {
             Log.e("MemoryLayersStrategy", "Failed to parse long-term facts: ${e.localizedMessage}")
             emptyList()

@@ -1,5 +1,15 @@
 package com.example.petapp.domain.model
 
+/**
+ * Represents the state of the agentic task lifecycle.
+ *
+ * **Intentional dual role:** each subclass serves both as the UI state machine driver
+ * (determining which composable renders in [com.example.petapp.ui.screens.TaskStateCard])
+ * AND as the orchestration context carrier — payload fields (`plan`, `executionResult`, `reason`)
+ * are injected into LLM prompts via [com.example.petapp.domain.prompt.DefaultPromptBuilder.stateContext].
+ * This is deliberate: the data that drives the UI display (e.g. showing the plan text) is exactly
+ * the same data that the next LLM call needs — no separate PromptContext class is needed.
+ */
 sealed class TaskState {
     object Idle : TaskState()
     data class Analyzing(val userInput: String) : TaskState()

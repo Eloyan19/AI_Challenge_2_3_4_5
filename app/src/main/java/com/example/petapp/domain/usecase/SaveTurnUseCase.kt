@@ -2,6 +2,7 @@ package com.example.petapp.domain.usecase
 
 import com.example.petapp.domain.model.ChatMessage
 import com.example.petapp.domain.repository.ChatRepository
+import javax.inject.Inject
 
 /**
  * Persists all messages produced in a single agent turn.
@@ -12,7 +13,7 @@ import com.example.petapp.domain.repository.ChatRepository
  *
  * @param branchId Target branch; defaults to the main branch (id = 1).
  */
-class SaveTurnUseCase(private val repository: ChatRepository) {
+class SaveTurnUseCase @Inject constructor(private val repository: ChatRepository) {
     /** Saves [messages] stamped with [branchId] and returns the last inserted row id. */
     suspend operator fun invoke(messages: List<ChatMessage>, branchId: Long = 1L): Long? =
         repository.saveMessages(messages.map { it.copy(branchId = branchId) })

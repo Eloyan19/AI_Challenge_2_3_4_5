@@ -2,6 +2,7 @@ package com.example.petapp.domain.usecase
 
 import com.example.petapp.domain.model.ChatMessage
 import com.example.petapp.domain.repository.ChatRepository
+import javax.inject.Inject
 
 /**
  * Loads all persisted messages from the database for session restore.
@@ -10,6 +11,6 @@ import com.example.petapp.domain.repository.ChatRepository
  * after the app restarts. For the Branching strategy, history is reconstructed differently
  * via `reconstructBranchHistory` in [com.example.petapp.ui.MainViewModel].
  */
-class LoadHistoryUseCase(private val repository: ChatRepository) {
+class LoadHistoryUseCase @Inject constructor(private val repository: ChatRepository) {
     suspend operator fun invoke(): List<ChatMessage> = repository.getAllMessages()
 }

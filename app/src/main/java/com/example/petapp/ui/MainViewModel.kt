@@ -23,30 +23,9 @@ import com.example.petapp.domain.strategy.StickyFactsStrategy
 import com.example.petapp.domain.strategy.SummaryStrategy
 import com.example.petapp.domain.model.TaskState
 import com.example.petapp.domain.model.TaskStateMachine
-import com.example.petapp.domain.prompt.DefaultPromptBuilder
-import com.example.petapp.domain.usecase.AddLongTermMemoryUseCase
-import com.example.petapp.domain.usecase.ClearFactsUseCase
-import com.example.petapp.domain.usecase.ClearHistoryUseCase
-import com.example.petapp.domain.usecase.ClearSummaryUseCase
-import com.example.petapp.domain.usecase.ClearWorkingMemoryUseCase
-import com.example.petapp.domain.usecase.CreateBranchUseCase
-import com.example.petapp.domain.usecase.DeleteLongTermMemoryUseCase
-import com.example.petapp.domain.usecase.DeleteProfileUseCase
-import com.example.petapp.domain.usecase.DetectComplexityUseCase
-import com.example.petapp.domain.usecase.GetBranchesUseCase
-import com.example.petapp.domain.usecase.GetFactsUseCase
-import com.example.petapp.domain.usecase.GetLongTermMemoryUseCase
-import com.example.petapp.domain.usecase.GetProfilesUseCase
-import com.example.petapp.domain.usecase.GetSummaryUseCase
-import com.example.petapp.domain.usecase.GetWorkingMemoryUseCase
-import com.example.petapp.domain.usecase.LoadHistoryUseCase
-import com.example.petapp.domain.usecase.RunAgentSwarmUseCase
-import com.example.petapp.domain.usecase.SaveFactsUseCase
-import com.example.petapp.domain.usecase.SaveProfileUseCase
-import com.example.petapp.domain.usecase.SaveSummaryUseCase
-import com.example.petapp.domain.usecase.SaveTurnUseCase
-import com.example.petapp.domain.usecase.SaveWorkingMemoryUseCase
+import com.example.petapp.domain.usecase.ChatUseCases
 import com.example.petapp.domain.usecase.TaskOrchestratorUseCase
+import com.example.petapp.domain.usecase.TaskUseCases
 import com.google.gson.Gson
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -95,7 +74,9 @@ class MainViewModel @Inject constructor(
     private val llmService: LlmService,
     private val providerConfig: LlmProviderConfig,
     private val gson: Gson,
-    private val guardrailsLoader: GuardrailsLoader
+    private val guardrailsLoader: GuardrailsLoader,
+    private val chat: ChatUseCases,
+    private val tasks: TaskUseCases,
 ) : ViewModel() {
 
     companion object {
@@ -122,38 +103,6 @@ class MainViewModel @Inject constructor(
         const val MAIN_BRANCH_ID = 1L
 
     }
-
-    // ── Use cases ──────────────────────────────────────────────────────────────
-    private val loadHistoryUseCase  = LoadHistoryUseCase(repository)
-    private val saveTurnUseCase     = SaveTurnUseCase(repository)
-
-    // ── Task orchestrator (constructed inline — follows existing use case pattern) ──
-    private val promptBuilder   = DefaultPromptBuilder()
-    private val detectComplexity = DetectComplexityUseCase(llmService, providerConfig)
-    private val runSwarm        = RunAgentSwarmUseCase(llmService, promptBuilder, providerConfig)
-    private val orchestrator    = TaskOrchestratorUseCase(detectComplexity, runSwarm, providerConfig)
-    private val clearHistoryUseCase = ClearHistoryUseCase(repository)
-    private val getSummaryUseCase   = GetSummaryUseCase(repository)
-    private val saveSummaryUseCase  = SaveSummaryUseCase(repository)
-    private val clearSummaryUseCase = ClearSummaryUseCase(repository)
-    private val getFactsUseCase     = GetFactsUseCase(repository)
-    private val saveFactsUseCase    = SaveFactsUseCase(repository)
-    private val clearFactsUseCase   = ClearFactsUseCase(repository)
-    private val getBranchesUseCase  = GetBranchesUseCase(repository)
-    private val createBranchUseCase = CreateBranchUseCase(repository)
-
-    // Memory layers use cases
-    private val getWorkingMemoryUseCase     = GetWorkingMemoryUseCase(repository)
-    private val saveWorkingMemoryUseCase    = SaveWorkingMemoryUseCase(repository)
-    private val clearWorkingMemoryUseCase   = ClearWorkingMemoryUseCase(repository)
-    private val getLongTermMemoryUseCase    = GetLongTermMemoryUseCase(repository)
-    private val addLongTermMemoryUseCase    = AddLongTermMemoryUseCase(repository)
-    private val deleteLongTermMemoryUseCase = DeleteLongTermMemoryUseCase(repository)
-
-    // Profile use cases
-    private val getProfilesUseCase  = GetProfilesUseCase(repository)
-    private val saveProfileUseCase  = SaveProfileUseCase(repository)
-    private val deleteProfileUseCase = DeleteProfileUseCase(repository)
 
     /** Serializes all agent operations to prevent concurrent mutation of agent history. */
     val agentMutex  = Mutex()
@@ -356,15 +305,15 @@ class MainViewModel @Inject constructor(
                     prefs.edit().remove(KEY_ACTIVE_PROFILE).apply()
                 }
             }
-            _profiles.value = getProfilesUseCase()
+            _profiles.value = chat.getProfiles()
 
             applyStrategy(_currentStrategyType.value, _keepLastN.value, restoreAux = true)
             restoreHistory(_activeBranchId.value)
             if (_currentStrategyType.value == StrategyType.BRANCHING) {
-                _branches.value = getBranchesUseCase()
+                _branches.value = chat.getBranches()
             }
             if (_currentStrategyType.value == StrategyType.MEMORY_LAYERS) {
-                _longTermMemories.value = getLongTermMemoryUseCase()
+                _longTermMemories.value = chat.getLongTermMemory()
             }
             // Restore task state — if app was closed while plan was awaiting confirmation,
             // bring the user back to the approval screen
@@ -404,9 +353,9 @@ class MainViewModel @Inject constructor(
                 // coroutine cannot write stale aux data back after the clear.
                 agent.strategy.onAuxDataUpdated = null
                 // Clear all aux data — each strategy starts fresh, old aux is irrelevant
-                clearSummaryUseCase()
-                clearFactsUseCase()
-                clearWorkingMemoryUseCase()
+                chat.clearSummary()
+                chat.clearFacts()
+                chat.clearWorkingMemory()
                 _auxData.value = null
                 applyStrategy(type, keepLastN, restoreAux = false)
                 // Reload history from DB under the new strategy's rules so the agent's
@@ -416,10 +365,10 @@ class MainViewModel @Inject constructor(
                 restoreHistory(_activeBranchId.value)
             }
             if (type == StrategyType.BRANCHING) {
-                _branches.value = getBranchesUseCase()
+                _branches.value = chat.getBranches()
             }
             if (type == StrategyType.MEMORY_LAYERS) {
-                _longTermMemories.value = getLongTermMemoryUseCase()
+                _longTermMemories.value = chat.getLongTermMemory()
             }
         }
     }
@@ -438,44 +387,44 @@ class MainViewModel @Inject constructor(
             StrategyType.SLIDING_WINDOW -> SlidingWindowStrategy(n)
             StrategyType.SUMMARY        -> SummaryStrategy(llmService, providerConfig, n).also { s ->
                 if (restoreAux) {
-                    val saved = getSummaryUseCase()
+                    val saved = chat.getSummary()
                     s.summary = saved
                     _auxData.value = saved
                 }
                 s.onAuxDataUpdated = { text ->
                     _auxData.value = text
                     viewModelScope.launch {
-                        if (text != null) saveSummaryUseCase(text) else clearSummaryUseCase()
+                        if (text != null) chat.saveSummary(text) else chat.clearSummary()
                     }
                 }
             }
             StrategyType.STICKY_FACTS   -> StickyFactsStrategy(llmService, providerConfig, n).also { s ->
                 if (restoreAux) {
-                    val saved = getFactsUseCase()
+                    val saved = chat.getFacts()
                     s.facts = saved
                     _auxData.value = saved
                 }
                 s.onAuxDataUpdated = { text ->
                     _auxData.value = text
                     viewModelScope.launch {
-                        if (text != null) saveFactsUseCase(text) else clearFactsUseCase()
+                        if (text != null) chat.saveFacts(text) else chat.clearFacts()
                     }
                 }
             }
             StrategyType.BRANCHING      -> BranchingStrategy()
-            StrategyType.MEMORY_LAYERS  -> MemoryLayersStrategy(llmService, providerConfig, n).also { s ->
-                val ltm = getLongTermMemoryUseCase()
+            StrategyType.MEMORY_LAYERS  -> MemoryLayersStrategy(llmService, providerConfig, n, gson).also { s ->
+                val ltm = chat.getLongTermMemory()
                 _longTermMemories.value = ltm
-                s.longTermMemory = if (ltm.isEmpty()) null else ltm.joinToString("\n") { "[${it.category}] ${it.keyName}: ${it.value}" }
+                s.setLongTermMemory(formatLtmForPrompt(ltm))
                 if (restoreAux) {
-                    val saved = getWorkingMemoryUseCase()
-                    s.workingMemory = saved
+                    val saved = chat.getWorkingMemory()
+                    s.restoreWorkingMemory(saved)
                     _auxData.value = saved
                 }
                 s.onAuxDataUpdated = { text ->
                     _auxData.value = text
                     viewModelScope.launch {
-                        if (text != null) saveWorkingMemoryUseCase(text) else clearWorkingMemoryUseCase()
+                        if (text != null) chat.saveWorkingMemory(text) else chat.clearWorkingMemory()
                     }
                 }
             }
@@ -516,7 +465,7 @@ class MainViewModel @Inject constructor(
                 _uiState.value = UiState.Loading()
                 setTaskState(TaskState.Analyzing(userInput))
                 val compressedHistory = agent.strategy.buildMessages(agent.historySnapshot())
-                when (val result = orchestrator.detectAndPlan(
+                when (val result = tasks.orchestrator.detectAndPlan(
                     userInput               = userInput,
                     compressedHistory       = compressedHistory,
                     userProfileInstructions = agent.systemProfileInstructions,
@@ -559,7 +508,7 @@ class MainViewModel @Inject constructor(
                     content = "=== ЗАДАЧА В РАБОТЕ ===\nЗапрос: ${state.userInput}\n\nУтверждённый план:\n${state.plan}"
                 )
                 agent.appendMessages(listOf(planContextMsg))
-                saveTurnUseCase(
+                chat.saveTurn(
                     listOf(ChatMessage(
                         turnId           = turnIdSource.incrementAndGet(),
                         role             = "system",
@@ -574,7 +523,7 @@ class MainViewModel @Inject constructor(
                 )
 
                 val compressedHistory = agent.strategy.buildMessages(agent.historySnapshot())
-                when (val result = orchestrator.executeAndValidate(
+                when (val result = tasks.orchestrator.executeAndValidate(
                     userInput               = state.userInput,
                     plan                    = state.plan,
                     compressedHistory       = compressedHistory,
@@ -633,7 +582,7 @@ class MainViewModel @Inject constructor(
                 val replanReason = reason.ifBlank { "Валидация не пройдена: ${s.reason}" }
                 setTaskState(TaskState.Replanning(s.userInput, s.plan, replanReason))
                 val compressedHistory = agent.strategy.buildMessages(agent.historySnapshot())
-                when (val result = orchestrator.replan(
+                when (val result = tasks.orchestrator.replan(
                     userInput               = s.userInput,
                     previousPlan            = s.plan,
                     rejectionReason         = replanReason,
@@ -670,7 +619,7 @@ class MainViewModel @Inject constructor(
                 _uiState.value = UiState.Loading()
                 setTaskState(TaskState.Replanning(state.userInput, state.plan, reason))
                 val compressedHistory = agent.strategy.buildMessages(agent.historySnapshot())
-                when (val result = orchestrator.replan(
+                when (val result = tasks.orchestrator.replan(
                     userInput               = state.userInput,
                     previousPlan            = state.plan,
                     rejectionReason         = reason,
@@ -718,7 +667,7 @@ class MainViewModel @Inject constructor(
         when (val result = agent.run(userInput)) {
             is SimpleAgent.AgentResult.Success -> {
                 val branchId = _activeBranchId.value
-                val lastId = saveTurnUseCase(result.turnMessages.toDomainMessages(result), branchId)
+                val lastId = chat.saveTurn(result.turnMessages.toDomainMessages(result), branchId)
                 _chatHistory.value = (_chatHistory.value + ChatTurn(
                     userMessage   = userInput,
                     agentResponse = result.response,
@@ -746,7 +695,7 @@ class MainViewModel @Inject constructor(
         val assistantMsg = Message(role = "assistant", content = finalAnswer)
         agent.appendMessages(listOf(userMsg, assistantMsg))
         val branchId = _activeBranchId.value
-        val lastId = saveTurnUseCase(listOf(userMsg, assistantMsg).toDomainMessagesSimple(), branchId)
+        val lastId = chat.saveTurn(listOf(userMsg, assistantMsg).toDomainMessagesSimple(), branchId)
         _chatHistory.value = (_chatHistory.value + ChatTurn(
             userMessage   = userInput,
             agentResponse = finalAnswer,
@@ -774,8 +723,8 @@ class MainViewModel @Inject constructor(
         if (_uiState.value is UiState.Loading) return
         viewModelScope.launch {
             val parentId = _activeBranchId.value
-            val newBranchId = createBranchUseCase(name, parentId, checkpointMessageId)
-            _branches.value = getBranchesUseCase()
+            val newBranchId = chat.createBranch(name, parentId, checkpointMessageId)
+            _branches.value = chat.getBranches()
             switchBranch(newBranchId)
         }
     }
@@ -844,10 +793,10 @@ class MainViewModel @Inject constructor(
      */
     fun newSession() {
         viewModelScope.launch {
-            clearHistoryUseCase()
-            clearSummaryUseCase()
-            clearFactsUseCase()
-            clearWorkingMemoryUseCase()
+            chat.clearHistory()
+            chat.clearSummary()
+            chat.clearFacts()
+            chat.clearWorkingMemory()
             repository.resetBranches()
             repository.clearTaskPlan()
 
@@ -862,7 +811,7 @@ class MainViewModel @Inject constructor(
             // resetBranches() preserves branch id=1 (only deletes id != 1).
             // Reload so the BranchBar shows the root branch immediately after reset.
             _branches.value = if (_currentStrategyType.value == StrategyType.BRANCHING) {
-                getBranchesUseCase()
+                chat.getBranches()
             } else {
                 emptyList()
             }
@@ -887,7 +836,7 @@ class MainViewModel @Inject constructor(
         val all = if (_currentStrategyType.value == StrategyType.BRANCHING) {
             reconstructBranchHistory(branchId)
         } else {
-            loadHistoryUseCase()
+            chat.loadHistory()
         }
 
         val saved = when (_currentStrategyType.value) {
@@ -909,7 +858,7 @@ class MainViewModel @Inject constructor(
     /** Adds a new entry to long-term memory and refreshes the strategy's in-memory copy. */
     fun addLongTermMemory(category: String, keyName: String, value: String) {
         viewModelScope.launch {
-            addLongTermMemoryUseCase(category, keyName, value)
+            chat.addLongTermMemory(category, keyName, value)
             refreshLongTermMemories()
         }
     }
@@ -917,7 +866,7 @@ class MainViewModel @Inject constructor(
     /** Deletes a long-term memory entry by id and refreshes the strategy's in-memory copy. */
     fun deleteLongTermMemory(id: Long) {
         viewModelScope.launch {
-            deleteLongTermMemoryUseCase(id)
+            chat.deleteLongTermMemory(id)
             refreshLongTermMemories()
         }
     }
@@ -934,7 +883,7 @@ class MainViewModel @Inject constructor(
                 val history = agent.historySnapshot()
                 if (history.isNotEmpty()) {
                     strategy.extractLongTermFacts(history)?.forEach { entry ->
-                        addLongTermMemoryUseCase(entry.category, entry.keyName, entry.value)
+                        chat.addLongTermMemory(entry.category, entry.keyName, entry.value)
                     }
                     refreshLongTermMemories()
                 }
@@ -943,10 +892,17 @@ class MainViewModel @Inject constructor(
     }
 
     private suspend fun refreshLongTermMemories() {
-        val ltm = getLongTermMemoryUseCase()
+        val ltm = chat.getLongTermMemory()
         _longTermMemories.value = ltm
-        val ltmText = if (ltm.isEmpty()) null else ltm.joinToString("\n") { "[${it.category}] ${it.keyName}: ${it.value}" }
-        (agent.strategy as? MemoryLayersStrategy)?.longTermMemory = ltmText
+        (agent.strategy as? MemoryLayersStrategy)?.setLongTermMemory(formatLtmForPrompt(ltm))
+    }
+
+    private fun formatLtmForPrompt(entries: List<LongTermMemoryEntry>): String? {
+        if (entries.isEmpty()) return null
+        return entries.groupBy { it.category }
+            .entries.joinToString("\n\n") { (cat, items) ->
+                "== $cat ==\n" + items.joinToString("\n") { "${it.keyName}: ${it.value}" }
+            }
     }
 
     // ── Profile management ─────────────────────────────────────────────────────
@@ -965,8 +921,8 @@ class MainViewModel @Inject constructor(
 
             agentMutex.withLock {
                 agent.systemProfileInstructions = profile?.instructions
-                clearWorkingMemoryUseCase()
-                (agent.strategy as? MemoryLayersStrategy)?.workingMemory = null
+                chat.clearWorkingMemory()
+                (agent.strategy as? MemoryLayersStrategy)?.restoreWorkingMemory(null)
                 _auxData.value = null
             }
             _activeProfile.value = profile
@@ -976,8 +932,8 @@ class MainViewModel @Inject constructor(
     /** Creates a new profile or updates an existing one. Pass null [id] to create. */
     fun saveProfile(id: Long?, name: String, instructions: String) {
         viewModelScope.launch {
-            val savedId = saveProfileUseCase(id, name, instructions)
-            _profiles.value = getProfilesUseCase()
+            val savedId = chat.saveProfile(id, name, instructions)
+            _profiles.value = chat.getProfiles()
             // If editing the active profile — update instructions in agent immediately
             if (_activeProfile.value?.id == savedId) {
                 val updated = repository.getProfile(savedId)
@@ -990,8 +946,8 @@ class MainViewModel @Inject constructor(
     /** Deletes a profile. If it was active — clears the active profile. */
     fun deleteProfile(id: Long) {
         viewModelScope.launch {
-            deleteProfileUseCase(id)
-            _profiles.value = getProfilesUseCase()
+            chat.deleteProfile(id)
+            _profiles.value = chat.getProfiles()
             if (_activeProfile.value?.id == id) {
                 prefs.edit().remove(KEY_ACTIVE_PROFILE).apply()
                 _activeProfile.value = null

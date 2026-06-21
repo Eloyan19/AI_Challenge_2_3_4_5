@@ -4,8 +4,9 @@ import com.example.petapp.domain.LlmService
 import com.example.petapp.domain.model.LlmProviderConfig
 import com.example.petapp.domain.model.LlmRequest
 import com.example.petapp.domain.model.Message
+import javax.inject.Inject
 
-class DetectComplexityUseCase(
+class DetectComplexityUseCase @Inject constructor(
     private val llmService: LlmService,
     private val providerConfig: LlmProviderConfig
 ) {
