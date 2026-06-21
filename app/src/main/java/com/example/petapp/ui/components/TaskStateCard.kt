@@ -42,6 +42,7 @@ fun TaskStateCard(
     onConfirm: () -> Unit,
     onReject: (String) -> Unit,
     onDismiss: () -> Unit,
+    onRetry: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     AnimatedVisibility(
@@ -55,16 +56,23 @@ fun TaskStateCard(
             modifier = modifier.fillMaxWidth()
         ) {
             when (taskState) {
+                is TaskState.Analyzing  -> SpinnerRow("Анализирую задачу...")
                 is TaskState.Planning   -> SpinnerRow("Планирую задачу...")
                 is TaskState.Execution  -> SpinnerRow("Выполняю план...")
                 is TaskState.Validation -> SpinnerRow("Валидирую результат...")
                 is TaskState.Replanning -> SpinnerRow("Перепланирую: ${taskState.reason.take(60).ifBlank { "создаю новый план" }}")
-                is TaskState.Done       -> DoneRow(taskState.finalResult)
+                is TaskState.Done       -> DoneRow(taskState.finalResult, onDismiss = onDismiss)
                 is TaskState.AwaitingInput -> AwaitingInputSection(
                     plan      = taskState.plan,
                     critique  = taskState.critique,
                     onConfirm = onConfirm,
                     onReject  = onReject
+                )
+                is TaskState.ValidationFailed -> ValidationFailedSection(
+                    reason    = taskState.reason,
+                    onRetry   = onRetry,
+                    onReplan  = { onReject("Валидация не пройдена: ${taskState.reason}") },
+                    onDismiss = onDismiss
                 )
                 is TaskState.Error -> ErrorRow(
                     message   = taskState.message,
@@ -93,7 +101,7 @@ private fun SpinnerRow(label: String) {
 }
 
 @Composable
-private fun DoneRow(result: String) {
+private fun DoneRow(result: String, onDismiss: () -> Unit) {
     Row(
         modifier          = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -101,10 +109,45 @@ private fun DoneRow(result: String) {
         Text("✓", color = Color(0xFF4CAF50), fontWeight = FontWeight.Bold)
         Spacer(Modifier.width(8.dp))
         Text(
-            text  = result.lines().first().take(80),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            text     = result.lines().first().take(80),
+            style    = MaterialTheme.typography.bodySmall,
+            color    = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f)
         )
+        TextButton(onClick = onDismiss) { Text("Закрыть") }
+    }
+}
+
+@Composable
+private fun ValidationFailedSection(
+    reason: String,
+    onRetry: () -> Unit,
+    onReplan: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
+        Text(
+            text       = "Валидация не пройдена",
+            style      = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+            color      = MaterialTheme.colorScheme.error
+        )
+        if (reason.isNotBlank()) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text  = reason,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Spacer(Modifier.height(10.dp))
+        Row {
+            Button(onClick = onRetry) { Text("Повторить") }
+            Spacer(Modifier.width(8.dp))
+            TextButton(onClick = onReplan) { Text("Переработать план") }
+            Spacer(Modifier.width(8.dp))
+            TextButton(onClick = onDismiss) { Text("Закрыть") }
+        }
     }
 }
 

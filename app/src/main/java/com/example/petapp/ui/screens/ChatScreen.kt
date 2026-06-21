@@ -262,7 +262,8 @@ fun ChatScreen(navController: NavController, viewModel: MainViewModel) {
                     taskState = taskState,
                     onConfirm = { viewModel.confirmPlan() },
                     onReject  = { reason -> viewModel.rejectPlan(reason) },
-                    onDismiss = { viewModel.dismissTaskState() }
+                    onDismiss = { viewModel.dismissTaskState() },
+                    onRetry   = { viewModel.retryFromValidationFailed() }
                 )
             }
 

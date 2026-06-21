@@ -22,6 +22,7 @@ import com.example.petapp.domain.strategy.SlidingWindowStrategy
 import com.example.petapp.domain.strategy.StickyFactsStrategy
 import com.example.petapp.domain.strategy.SummaryStrategy
 import com.example.petapp.domain.model.TaskState
+import com.example.petapp.domain.model.TaskStateMachine
 import com.example.petapp.domain.prompt.DefaultPromptBuilder
 import com.example.petapp.domain.usecase.AddLongTermMemoryUseCase
 import com.example.petapp.domain.usecase.ClearFactsUseCase
@@ -327,6 +328,16 @@ class MainViewModel @Inject constructor(
     private val _taskState = MutableStateFlow<TaskState>(TaskState.Idle)
     val taskState: StateFlow<TaskState> = _taskState.asStateFlow()
 
+    private fun setTaskState(newState: TaskState) {
+        when (val t = TaskStateMachine.validate(_taskState.value, newState)) {
+            is TaskStateMachine.Transition.Allowed -> _taskState.value = newState
+            is TaskStateMachine.Transition.Forbidden -> {
+                android.util.Log.w("TaskStateMachine", t.reason)
+                _uiState.value = UiState.Error(t.reason)
+            }
+        }
+    }
+
     // ── Init ───────────────────────────────────────────────────────────────────
 
     init {
@@ -358,7 +369,7 @@ class MainViewModel @Inject constructor(
             // Restore task state — if app was closed while plan was awaiting confirmation,
             // bring the user back to the approval screen
             repository.getTaskPlan()?.let { planData ->
-                _taskState.value = TaskState.AwaitingInput(
+                _taskState.value = TaskState.AwaitingInput(  // direct set: restore on cold start bypasses validation
                     userInput = planData.userInput,
                     plan      = planData.plan,
                     critique  = planData.critique
@@ -483,12 +494,27 @@ class MainViewModel @Inject constructor(
      * The mutex is released while the user reads the plan so the UI stays responsive.
      */
     fun sendMessage(userInput: String) {
+        // Guard: block new messages during active task lifecycle
+        when (val s = _taskState.value) {
+            is TaskState.Idle -> Unit
+            is TaskState.Done, is TaskState.Error -> _taskState.value = TaskState.Idle  // auto-dismiss
+            is TaskState.AwaitingInput -> {
+                _uiState.value = UiState.Error("Сначала одобри или отклони план ↑")
+                return
+            }
+            else -> {
+                _uiState.value = UiState.Error("Дождись завершения этапа «${s::class.simpleName}»")
+                return
+            }
+        }
+
         updateAgentConfig()
 
         viewModelScope.launch {
             agentMutex.withLock {
                 agent.onToolCall = { status -> _uiState.value = UiState.Loading(toolStatus = status) }
                 _uiState.value = UiState.Loading()
+                setTaskState(TaskState.Analyzing(userInput))
                 val compressedHistory = agent.strategy.buildMessages(agent.historySnapshot())
                 when (val result = orchestrator.detectAndPlan(
                     userInput               = userInput,
@@ -496,13 +522,17 @@ class MainViewModel @Inject constructor(
                     userProfileInstructions = agent.systemProfileInstructions,
                     model                   = _selectedModel.value
                 )) {
-                    is TaskOrchestratorUseCase.OrchestratorResult.Simple -> runDirectAnswer(userInput)
+                    is TaskOrchestratorUseCase.OrchestratorResult.Simple -> {
+                        setTaskState(TaskState.Idle)
+                        runDirectAnswer(userInput)
+                    }
                     is TaskOrchestratorUseCase.OrchestratorResult.PlanReady -> {
-                        _taskState.value = TaskState.AwaitingInput(userInput, result.plan, result.critique)
+                        setTaskState(TaskState.AwaitingInput(userInput, result.plan, result.critique))
                         repository.saveTaskPlan(userInput, result.plan, result.critique)
                         _uiState.value   = UiState.Idle
                     }
                     is TaskOrchestratorUseCase.OrchestratorResult.Failed -> {
+                        setTaskState(TaskState.Idle)
                         _uiState.value = UiState.Error(result.error)
                     }
                     else -> Unit
@@ -517,8 +547,8 @@ class MainViewModel @Inject constructor(
         updateAgentConfig()
         viewModelScope.launch {
             agentMutex.withLock {
-                _uiState.value   = UiState.Loading()
-                _taskState.value = TaskState.Execution(state.userInput, state.plan)
+                _uiState.value = UiState.Loading()
+                setTaskState(TaskState.Execution(state.userInput, state.plan))
 
                 // Inject the approved plan into agent.history as a system message so context
                 // strategies (Summary, StickyFacts, MemoryLayers) can see and compress it.
@@ -547,29 +577,43 @@ class MainViewModel @Inject constructor(
                     plan                    = state.plan,
                     compressedHistory       = compressedHistory,
                     userProfileInstructions = agent.systemProfileInstructions,
-                    model                   = _selectedModel.value
+                    model                   = _selectedModel.value,
+                    onValidating            = { execResult ->
+                        setTaskState(TaskState.Validation(state.userInput, state.plan, execResult))
+                    }
                 )) {
                     is TaskOrchestratorUseCase.OrchestratorResult.ExecutionDone -> {
                         repository.clearTaskPlan()
-                        _taskState.value = TaskState.Done(result.finalAnswer)
                         persistOrchestratorResult(state.userInput, result.finalAnswer)
-                        _taskState.value = TaskState.Idle
-                        _uiState.value   = UiState.Idle
+                        setTaskState(TaskState.Done(result.finalAnswer))
+                        // Done persists until user dismisses via dismissTaskState()
+                        _uiState.value = UiState.Idle
                     }
                     is TaskOrchestratorUseCase.OrchestratorResult.ValidationFailed -> {
                         repository.clearTaskPlan()
-                        _taskState.value = TaskState.Error("Валидация не пройдена: ${result.reason}")
-                        _uiState.value   = UiState.Idle
+                        setTaskState(TaskState.ValidationFailed(
+                            userInput       = state.userInput,
+                            plan            = state.plan,
+                            executionResult = "",
+                            reason          = result.reason
+                        ))
+                        _uiState.value = UiState.Idle
                     }
                     is TaskOrchestratorUseCase.OrchestratorResult.Failed -> {
                         repository.clearTaskPlan()
-                        _taskState.value = TaskState.Idle
-                        _uiState.value   = UiState.Error(result.error)
+                        setTaskState(TaskState.Error(result.error))
+                        _uiState.value = UiState.Idle
                     }
                     else -> Unit
                 }
             }
         }
+    }
+
+    /** Retries execution with the same plan after a validation failure. */
+    fun retryFromValidationFailed() {
+        val s = _taskState.value as? TaskState.ValidationFailed ?: return
+        setTaskState(TaskState.AwaitingInput(s.userInput, s.plan))
     }
 
     /** Rejects the current plan with an optional [reason] and triggers replanning. */
@@ -578,8 +622,8 @@ class MainViewModel @Inject constructor(
         updateAgentConfig()
         viewModelScope.launch {
             agentMutex.withLock {
-                _uiState.value   = UiState.Loading()
-                _taskState.value = TaskState.Replanning(state.userInput, state.plan, reason)
+                _uiState.value = UiState.Loading()
+                setTaskState(TaskState.Replanning(state.userInput, state.plan, reason))
                 val compressedHistory = agent.strategy.buildMessages(agent.historySnapshot())
                 when (val result = orchestrator.replan(
                     userInput               = state.userInput,
@@ -590,14 +634,14 @@ class MainViewModel @Inject constructor(
                     model                   = _selectedModel.value
                 )) {
                     is TaskOrchestratorUseCase.OrchestratorResult.PlanReady -> {
-                        _taskState.value = TaskState.AwaitingInput(state.userInput, result.plan, result.critique)
+                        setTaskState(TaskState.AwaitingInput(state.userInput, result.plan, result.critique))
                         repository.saveTaskPlan(state.userInput, result.plan, result.critique)
-                        _uiState.value   = UiState.Idle
+                        _uiState.value = UiState.Idle
                     }
                     is TaskOrchestratorUseCase.OrchestratorResult.Failed -> {
                         repository.clearTaskPlan()
-                        _taskState.value = TaskState.Idle
-                        _uiState.value   = UiState.Error(result.error)
+                        setTaskState(TaskState.Error(result.error))
+                        _uiState.value = UiState.Idle
                     }
                     else -> Unit
                 }
@@ -607,7 +651,7 @@ class MainViewModel @Inject constructor(
 
     /** Resets [taskState] to [TaskState.Idle] without any further action. */
     fun dismissTaskState() {
-        _taskState.value = TaskState.Idle
+        _taskState.value = TaskState.Idle  // direct set: dismiss is always allowed
         viewModelScope.launch { repository.clearTaskPlan() }
     }
 

@@ -49,7 +49,8 @@ class TaskOrchestratorUseCase(
         plan: String,
         compressedHistory: List<Message>,
         userProfileInstructions: String?,
-        model: String
+        model: String,
+        onValidating: suspend (executionResult: String) -> Unit = {}
     ): OrchestratorResult {
         val execResults = runSwarm(
             roles                   = listOf(AgentRole.EXECUTOR),
@@ -62,6 +63,8 @@ class TaskOrchestratorUseCase(
 
         val executionResult = execResults[AgentRole.EXECUTOR]?.getOrNull()
             ?: return OrchestratorResult.Failed("Не удалось выполнить план")
+
+        onValidating(executionResult.content)
 
         val validationState = TaskState.Validation(userInput, plan, executionResult.content)
         val validationResults = runSwarm(
