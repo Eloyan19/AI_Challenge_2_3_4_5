@@ -102,10 +102,15 @@ class MainViewModel @Inject constructor(
         /** Database id of the permanent root branch that is always present. */
         const val MAIN_BRANCH_ID = 1L
 
+        /** Maximum number of replanning attempts per task before the orchestrator gives up. */
+        const val MAX_REPLAN_ATTEMPTS = 3
     }
 
     /** Serializes all agent operations to prevent concurrent mutation of agent history. */
     val agentMutex  = Mutex()
+
+    /** Tracks how many replan attempts have been made for the current task. Reset on new task or dismiss. */
+    private var replanCount = 0
 
     /**
      * Monotonically-increasing counter used to generate collision-free [ChatMessage.turnId] values.
@@ -457,6 +462,7 @@ class MainViewModel @Inject constructor(
             }
         }
 
+        replanCount = 0
         updateAgentConfig()
 
         viewModelScope.launch {
@@ -574,6 +580,11 @@ class MainViewModel @Inject constructor(
     /** Triggers replanning directly from a validation failure, skipping the AwaitingInput step. */
     fun replanFromValidationFailed(reason: String = "") {
         if (_taskState.value !is TaskState.ValidationFailed) return
+        if (replanCount >= MAX_REPLAN_ATTEMPTS) {
+            setTaskState(TaskState.Error("Превышен лимит перепланирований ($MAX_REPLAN_ATTEMPTS). Уточните задачу и начните заново."))
+            return
+        }
+        replanCount++
         updateAgentConfig()
         viewModelScope.launch {
             agentMutex.withLock {
@@ -613,6 +624,11 @@ class MainViewModel @Inject constructor(
     /** Rejects the current plan with an optional [reason] and triggers replanning. */
     fun rejectPlan(reason: String = "") {
         val state = _taskState.value as? TaskState.AwaitingInput ?: return
+        if (replanCount >= MAX_REPLAN_ATTEMPTS) {
+            setTaskState(TaskState.Error("Превышен лимит перепланирований ($MAX_REPLAN_ATTEMPTS). Уточните задачу и начните заново."))
+            return
+        }
+        replanCount++
         updateAgentConfig()
         viewModelScope.launch {
             agentMutex.withLock {
@@ -646,6 +662,7 @@ class MainViewModel @Inject constructor(
 
     /** Resets [taskState] to [TaskState.Idle] without any further action. */
     fun dismissTaskState() {
+        replanCount = 0
         _taskState.value = TaskState.Idle  // direct set: dismiss is always allowed
         viewModelScope.launch { repository.clearTaskPlan() }
     }

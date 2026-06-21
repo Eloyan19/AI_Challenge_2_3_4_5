@@ -36,7 +36,8 @@ object TaskStateMachine {
             }
             is TaskState.AwaitingInput -> when (to) {
                 is TaskState.Execution,
-                is TaskState.Replanning -> Transition.Allowed
+                is TaskState.Replanning,
+                is TaskState.Error -> Transition.Allowed
                 is TaskState.Validation -> Transition.Forbidden(
                     "Нельзя перейти к валидации без выполнения"
                 )
