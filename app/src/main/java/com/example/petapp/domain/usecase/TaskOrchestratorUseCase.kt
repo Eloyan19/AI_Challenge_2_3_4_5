@@ -14,7 +14,7 @@ class TaskOrchestratorUseCase(
         object Simple : OrchestratorResult()
         data class PlanReady(val plan: String, val critique: String?) : OrchestratorResult()
         data class ExecutionDone(val finalAnswer: String) : OrchestratorResult()
-        data class ValidationFailed(val reason: String) : OrchestratorResult()
+        data class ValidationFailed(val reason: String, val executionResult: String) : OrchestratorResult()
         data class Failed(val error: String) : OrchestratorResult()
     }
 
@@ -23,9 +23,12 @@ class TaskOrchestratorUseCase(
         compressedHistory: List<Message>,
         userProfileInstructions: String?,
         model: String,
-        guardrailsInstruction: String? = null
+        guardrailsInstruction: String? = null,
+        onPlanning: suspend () -> Unit = {}
     ): OrchestratorResult {
         if (!detectComplexity(userInput)) return OrchestratorResult.Simple
+
+        onPlanning()
 
         val results = runSwarm(
             roles                   = listOf(AgentRole.PLANNER, AgentRole.CRITIC),
@@ -90,7 +93,7 @@ class TaskOrchestratorUseCase(
             val reason = rest.ifBlank {
                 firstLine.substringAfter(" ", missingDelimiterValue = "").trim()
             }.ifBlank { firstLine.trim() }
-            return OrchestratorResult.ValidationFailed(reason)
+            return OrchestratorResult.ValidationFailed(reason, executionResult.content)
         }
 
         val judgeResults = runSwarm(

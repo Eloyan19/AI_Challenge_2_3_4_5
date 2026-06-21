@@ -521,7 +521,8 @@ class MainViewModel @Inject constructor(
                     compressedHistory       = compressedHistory,
                     userProfileInstructions = agent.systemProfileInstructions,
                     model                   = _selectedModel.value,
-                    guardrailsInstruction   = agent.guardrailsInstruction
+                    guardrailsInstruction   = agent.guardrailsInstruction,
+                    onPlanning              = { setTaskState(TaskState.Planning(userInput)) }
                 )) {
                     is TaskOrchestratorUseCase.OrchestratorResult.Simple -> {
                         setTaskState(TaskState.Idle)
@@ -596,7 +597,7 @@ class MainViewModel @Inject constructor(
                         setTaskState(TaskState.ValidationFailed(
                             userInput       = state.userInput,
                             plan            = state.plan,
-                            executionResult = "",
+                            executionResult = result.executionResult,
                             reason          = result.reason
                         ))
                         _uiState.value = UiState.Idle
