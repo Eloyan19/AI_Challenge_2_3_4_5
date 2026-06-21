@@ -13,6 +13,7 @@ import com.example.petapp.domain.repository.ChatRepository
  * @param branchId Target branch; defaults to the main branch (id = 1).
  */
 class SaveTurnUseCase(private val repository: ChatRepository) {
-    suspend operator fun invoke(messages: List<ChatMessage>, branchId: Long = 1L) =
+    /** Saves [messages] stamped with [branchId] and returns the last inserted row id. */
+    suspend operator fun invoke(messages: List<ChatMessage>, branchId: Long = 1L): Long? =
         repository.saveMessages(messages.map { it.copy(branchId = branchId) })
 }

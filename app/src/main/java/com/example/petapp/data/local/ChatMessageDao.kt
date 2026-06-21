@@ -31,9 +31,9 @@ interface ChatMessageDao {
     @Query("SELECT MAX(id) FROM chat_messages WHERE branch_id = :branchId")
     suspend fun getLastIdForBranch(branchId: Long): Long?
 
-    /** Inserts all [messages]; existing rows with the same id are not replaced. */
+    /** Inserts all [messages] and returns the auto-generated row IDs in insertion order. */
     @Insert
-    suspend fun insertAll(messages: List<ChatMessageEntity>)
+    suspend fun insertAll(messages: List<ChatMessageEntity>): List<Long>
 
     /** Deletes every row in the table. */
     @Query("DELETE FROM chat_messages")

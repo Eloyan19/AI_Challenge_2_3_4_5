@@ -17,6 +17,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
  * - v3 → v4 ([MIGRATION_3_4]): added `working_memory` and `long_term_memory` tables for the
  *   MemoryLayers strategy.
  * - v4 → v5 ([MIGRATION_4_5]): added `user_profiles` table for named user instruction sets.
+ * - v5 → v6 ([MIGRATION_5_6]): added `task_plan` singleton table for Task State Machine persistence.
+ * - v6 → v7 ([MIGRATION_6_7]): added indices on `chat_messages(branch_id)` and `chat_messages(turn_id)`
+ *   for faster branch reconstruction and turn grouping queries.
  *
  * Obtained via [getInstance] which guarantees a single instance per process using
  * double-checked locking. Provided to DI via [com.example.petapp.di.DatabaseModule].
@@ -30,8 +33,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         WorkingMemoryEntity::class,
         LongTermMemoryEntity::class,
         UserProfileEntity::class,
+        TaskPlanEntity::class,
     ],
-    version = 5,
+    version = 7,
     exportSchema = false
 )
 abstract class ChatDatabase : RoomDatabase() {
@@ -43,6 +47,7 @@ abstract class ChatDatabase : RoomDatabase() {
     abstract fun workingMemoryDao(): WorkingMemoryDao
     abstract fun longTermMemoryDao(): LongTermMemoryDao
     abstract fun userProfileDao(): UserProfileDao
+    abstract fun taskPlanDao(): TaskPlanDao
 
     companion object {
         @Volatile
@@ -122,6 +127,24 @@ abstract class ChatDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `task_plan` " +
+                    "(`id` INTEGER NOT NULL DEFAULT 1, `user_input` TEXT NOT NULL, " +
+                    "`plan` TEXT NOT NULL, `critique` TEXT, " +
+                    "`updated_at` INTEGER NOT NULL, PRIMARY KEY(`id`))"
+                )
+            }
+        }
+
+        private val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_chat_messages_branch_id` ON `chat_messages` (`branch_id`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_chat_messages_turnId` ON `chat_messages` (`turnId`)")
+            }
+        }
+
         /**
          * Returns the singleton [ChatDatabase] instance, creating it on first call.
          *
@@ -136,7 +159,7 @@ abstract class ChatDatabase : RoomDatabase() {
                     ChatDatabase::class.java,
                     "chat_db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
                     .addCallback(object : RoomDatabase.Callback() {
                         override fun onCreate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
                             // Seed the root branch on fresh install.

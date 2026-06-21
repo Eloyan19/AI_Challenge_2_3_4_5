@@ -63,7 +63,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import com.example.petapp.domain.model.Branch
 import com.example.petapp.domain.model.StrategyType
+import com.example.petapp.domain.model.TaskState
 import com.example.petapp.ui.MainViewModel
+import com.example.petapp.ui.components.TaskStateCard
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -82,6 +84,7 @@ fun ChatScreen(navController: NavController, viewModel: MainViewModel) {
     val reasoningEffort  by viewModel.reasoningEffort.collectAsStateWithLifecycle()
     val maxTokensText    by viewModel.maxTokensText.collectAsStateWithLifecycle()
     val temperatureText  by viewModel.temperatureText.collectAsStateWithLifecycle()
+    val taskState        by viewModel.taskState.collectAsStateWithLifecycle()
 
     val listState = rememberLazyListState()
 
@@ -214,7 +217,7 @@ fun ChatScreen(navController: NavController, viewModel: MainViewModel) {
                 contentPadding      = PaddingValues(16.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                items(chatHistory, key = { it.hashCode() }) { turn ->
+                items(chatHistory, key = { it.lastMessageId ?: it.hashCode() }) { turn ->
                     ChatTurnItem(
                         turn              = turn,
                         showBranchButton  = strategyType == StrategyType.BRANCHING,
@@ -252,6 +255,16 @@ fun ChatScreen(navController: NavController, viewModel: MainViewModel) {
                 keepLastN    = keepLastN,
                 auxData      = auxData
             )
+
+            // ── Task state card ────────────────────────────────────────────────
+            if (taskState !is TaskState.Idle) {
+                TaskStateCard(
+                    taskState = taskState,
+                    onConfirm = { viewModel.confirmPlan() },
+                    onReject  = { reason -> viewModel.rejectPlan(reason) },
+                    onDismiss = { viewModel.dismissTaskState() }
+                )
+            }
 
             // ── Error banner ───────────────────────────────────────────────────
             if (uiState is MainViewModel.UiState.Error) {
@@ -301,7 +314,7 @@ fun ChatScreen(navController: NavController, viewModel: MainViewModel) {
                         viewModel.sendMessage(prompt.trim())
                         prompt = ""
                     },
-                    enabled        = prompt.isNotBlank() && !isLoading,
+                    enabled        = prompt.isNotBlank() && !isLoading && taskState is TaskState.Idle,
                     contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp)
                 ) { Text("→") }
             }

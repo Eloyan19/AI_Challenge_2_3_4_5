@@ -7,6 +7,7 @@ import com.example.petapp.data.local.ChatMessageDao
 import com.example.petapp.data.local.LongTermMemoryDao
 import com.example.petapp.data.local.StickyFactsDao
 import com.example.petapp.data.local.SummaryDao
+import com.example.petapp.data.local.TaskPlanDao
 import com.example.petapp.data.local.UserProfileDao
 import com.example.petapp.data.local.WorkingMemoryDao
 import dagger.Module
@@ -49,4 +50,7 @@ object DatabaseModule {
 
     @Provides
     fun provideUserProfileDao(db: ChatDatabase): UserProfileDao = db.userProfileDao()
+
+    @Provides
+    fun provideTaskPlanDao(db: ChatDatabase): TaskPlanDao = db.taskPlanDao()
 }

@@ -1,5 +1,7 @@
 package com.example.petapp.data
 
+import com.example.petapp.domain.model.Tool
+import com.example.petapp.domain.model.ToolFunction
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 

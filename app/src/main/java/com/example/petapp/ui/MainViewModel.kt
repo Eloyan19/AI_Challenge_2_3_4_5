@@ -3,9 +3,11 @@ package com.example.petapp.ui
 import android.content.SharedPreferences
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.petapp.data.DeepSeekApiService
-import com.example.petapp.data.Message
+import com.example.petapp.data.GuardrailsLoader
 import com.example.petapp.data.SimpleAgent
+import com.example.petapp.domain.LlmService
+import com.example.petapp.domain.model.LlmProviderConfig
+import com.example.petapp.domain.model.Message
 import com.example.petapp.domain.model.Branch
 import com.example.petapp.domain.model.ChatMessage
 import com.example.petapp.domain.model.LongTermMemoryEntry
@@ -19,6 +21,8 @@ import com.example.petapp.domain.strategy.NoopStrategy
 import com.example.petapp.domain.strategy.SlidingWindowStrategy
 import com.example.petapp.domain.strategy.StickyFactsStrategy
 import com.example.petapp.domain.strategy.SummaryStrategy
+import com.example.petapp.domain.model.TaskState
+import com.example.petapp.domain.prompt.DefaultPromptBuilder
 import com.example.petapp.domain.usecase.AddLongTermMemoryUseCase
 import com.example.petapp.domain.usecase.ClearFactsUseCase
 import com.example.petapp.domain.usecase.ClearHistoryUseCase
@@ -27,6 +31,7 @@ import com.example.petapp.domain.usecase.ClearWorkingMemoryUseCase
 import com.example.petapp.domain.usecase.CreateBranchUseCase
 import com.example.petapp.domain.usecase.DeleteLongTermMemoryUseCase
 import com.example.petapp.domain.usecase.DeleteProfileUseCase
+import com.example.petapp.domain.usecase.DetectComplexityUseCase
 import com.example.petapp.domain.usecase.GetBranchesUseCase
 import com.example.petapp.domain.usecase.GetFactsUseCase
 import com.example.petapp.domain.usecase.GetLongTermMemoryUseCase
@@ -34,11 +39,13 @@ import com.example.petapp.domain.usecase.GetProfilesUseCase
 import com.example.petapp.domain.usecase.GetSummaryUseCase
 import com.example.petapp.domain.usecase.GetWorkingMemoryUseCase
 import com.example.petapp.domain.usecase.LoadHistoryUseCase
+import com.example.petapp.domain.usecase.RunAgentSwarmUseCase
 import com.example.petapp.domain.usecase.SaveFactsUseCase
 import com.example.petapp.domain.usecase.SaveProfileUseCase
 import com.example.petapp.domain.usecase.SaveSummaryUseCase
 import com.example.petapp.domain.usecase.SaveTurnUseCase
 import com.example.petapp.domain.usecase.SaveWorkingMemoryUseCase
+import com.example.petapp.domain.usecase.TaskOrchestratorUseCase
 import com.google.gson.Gson
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -46,9 +53,14 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import kotlinx.collections.immutable.ImmutableList
+import kotlinx.collections.immutable.persistentListOf
+import kotlinx.collections.immutable.toImmutableList
 import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 
@@ -71,20 +83,27 @@ import javax.inject.Inject
  * @param prefs Shared preferences for persisting strategy settings between sessions.
  * @param repository Chat persistence layer.
  * @param agent The AI agent; shared singleton, accessed only under [agentMutex].
- * @param apiService DeepSeek API; used directly by context strategies (Summary, StickyFacts).
+ * @param llmService Provider-agnostic LLM service passed into context strategies.
+ * @param providerConfig Model list, context limit, and pricing for the active LLM provider.
  * @param gson Singleton Gson for serializing/deserializing [Message] objects.
  */
 class MainViewModel @Inject constructor(
     private val prefs: SharedPreferences,
     private val repository: ChatRepository,
     private val agent: SimpleAgent,
-    private val apiService: DeepSeekApiService,
-    private val gson: Gson
+    private val llmService: LlmService,
+    private val providerConfig: LlmProviderConfig,
+    private val gson: Gson,
+    private val guardrailsLoader: GuardrailsLoader
 ) : ViewModel() {
 
     companion object {
         /** Default number of messages kept in the live window for sliding-window strategies. */
         const val DEFAULT_KEEP_LAST = 10
+
+        /** Maximum number of turns materialized into the UI list. Older turns stay in the DB only.
+         *  This caps LazyColumn memory under NONE/BRANCHING strategies where agent history is uncapped. */
+        const val MAX_DISPLAY_TURNS = 100
 
         /** Name of the [SharedPreferences] file used for strategy settings. */
         const val PREFS_NAME    = "context_strategy_prefs"
@@ -101,20 +120,17 @@ class MainViewModel @Inject constructor(
         /** Database id of the permanent root branch that is always present. */
         const val MAIN_BRANCH_ID = 1L
 
-        /**
-         * Returns the context-window size (in tokens) for a given [model] identifier.
-         * Used to render the context usage progress bar with model-accurate limits.
-         */
-        fun contextLimitFor(model: String): Int = when (model) {
-            "deepseek-v4-pro"   -> 128_000
-            "deepseek-v4-flash" -> 128_000
-            else                -> 32_000
-        }
     }
 
     // ── Use cases ──────────────────────────────────────────────────────────────
     private val loadHistoryUseCase  = LoadHistoryUseCase(repository)
     private val saveTurnUseCase     = SaveTurnUseCase(repository)
+
+    // ── Task orchestrator (constructed inline — follows existing use case pattern) ──
+    private val promptBuilder   = DefaultPromptBuilder()
+    private val detectComplexity = DetectComplexityUseCase(llmService, providerConfig)
+    private val runSwarm        = RunAgentSwarmUseCase(llmService, promptBuilder, providerConfig)
+    private val orchestrator    = TaskOrchestratorUseCase(detectComplexity, runSwarm, providerConfig)
     private val clearHistoryUseCase = ClearHistoryUseCase(repository)
     private val getSummaryUseCase   = GetSummaryUseCase(repository)
     private val saveSummaryUseCase  = SaveSummaryUseCase(repository)
@@ -219,14 +235,14 @@ class MainViewModel @Inject constructor(
     private val _uiState     = MutableStateFlow<UiState>(UiState.Idle)
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
 
-    private val _chatHistory = MutableStateFlow<List<ChatTurn>>(emptyList())
-    val chatHistory: StateFlow<List<ChatTurn>> = _chatHistory.asStateFlow()
+    private val _chatHistory = MutableStateFlow<ImmutableList<ChatTurn>>(persistentListOf())
+    val chatHistory: StateFlow<ImmutableList<ChatTurn>> = _chatHistory.asStateFlow()
 
     // ── Inference settings state (survives config changes) ─────────────────────
     // _selectedModel must be declared before sessionStats because sessionStats
     // captures it in the combine() initializer.
 
-    private val _selectedModel   = MutableStateFlow("deepseek-v4-flash")
+    private val _selectedModel   = MutableStateFlow(providerConfig.defaultModel)
     val selectedModel: StateFlow<String>  = _selectedModel.asStateFlow()
 
     private val _thinkingEnabled = MutableStateFlow(false)
@@ -252,8 +268,8 @@ class MainViewModel @Inject constructor(
      * Recomputed reactively when either flow changes so the context bar reflects the
      * correct limit for the currently selected model.
      */
-    val sessionStats: StateFlow<SessionStats> = combine(chatHistory, _selectedModel) { turns, model ->
-        val limit = contextLimitFor(model)
+    val sessionStats: StateFlow<SessionStats> = combine(chatHistory, _selectedModel) { turns, _ ->
+        val limit = providerConfig.contextLimit
         if (turns.isEmpty()) return@combine SessionStats(contextLimit = limit)
         SessionStats(
             turnCount             = turns.size,
@@ -306,10 +322,18 @@ class MainViewModel @Inject constructor(
     private val _activeBranchId = MutableStateFlow(MAIN_BRANCH_ID)
     val activeBranchId: StateFlow<Long> = _activeBranchId.asStateFlow()
 
+    // ── Task state machine ─────────────────────────────────────────────────────
+
+    private val _taskState = MutableStateFlow<TaskState>(TaskState.Idle)
+    val taskState: StateFlow<TaskState> = _taskState.asStateFlow()
+
     // ── Init ───────────────────────────────────────────────────────────────────
 
     init {
         viewModelScope.launch {
+            _uiState.value = UiState.Loading()
+            agent.guardrailsInstruction = withContext(Dispatchers.IO) { guardrailsLoader.load() }
+
             // Restore active profile first so it's injected into the agent before history loads
             val savedProfileId = prefs.getLong(KEY_ACTIVE_PROFILE, -1L)
             if (savedProfileId != -1L) {
@@ -331,6 +355,16 @@ class MainViewModel @Inject constructor(
             if (_currentStrategyType.value == StrategyType.MEMORY_LAYERS) {
                 _longTermMemories.value = getLongTermMemoryUseCase()
             }
+            // Restore task state — if app was closed while plan was awaiting confirmation,
+            // bring the user back to the approval screen
+            repository.getTaskPlan()?.let { planData ->
+                _taskState.value = TaskState.AwaitingInput(
+                    userInput = planData.userInput,
+                    plan      = planData.plan,
+                    critique  = planData.critique
+                )
+            }
+            _uiState.value = UiState.Idle
         }
     }
 
@@ -355,6 +389,9 @@ class MainViewModel @Inject constructor(
 
         viewModelScope.launch {
             agentMutex.withLock {
+                // Detach the old strategy's callback before clearing so a racing afterTurn
+                // coroutine cannot write stale aux data back after the clear.
+                agent.strategy.onAuxDataUpdated = null
                 // Clear all aux data — each strategy starts fresh, old aux is irrelevant
                 clearSummaryUseCase()
                 clearFactsUseCase()
@@ -388,7 +425,7 @@ class MainViewModel @Inject constructor(
         val newStrategy: ContextStrategy = when (type) {
             StrategyType.NONE           -> NoopStrategy()
             StrategyType.SLIDING_WINDOW -> SlidingWindowStrategy(n)
-            StrategyType.SUMMARY        -> SummaryStrategy(apiService, n).also { s ->
+            StrategyType.SUMMARY        -> SummaryStrategy(llmService, providerConfig, n).also { s ->
                 if (restoreAux) {
                     val saved = getSummaryUseCase()
                     s.summary = saved
@@ -401,7 +438,7 @@ class MainViewModel @Inject constructor(
                     }
                 }
             }
-            StrategyType.STICKY_FACTS   -> StickyFactsStrategy(apiService, n).also { s ->
+            StrategyType.STICKY_FACTS   -> StickyFactsStrategy(llmService, providerConfig, n).also { s ->
                 if (restoreAux) {
                     val saved = getFactsUseCase()
                     s.facts = saved
@@ -415,7 +452,7 @@ class MainViewModel @Inject constructor(
                 }
             }
             StrategyType.BRANCHING      -> BranchingStrategy()
-            StrategyType.MEMORY_LAYERS  -> MemoryLayersStrategy(apiService, n).also { s ->
+            StrategyType.MEMORY_LAYERS  -> MemoryLayersStrategy(llmService, providerConfig, n).also { s ->
                 val ltm = getLongTermMemoryUseCase()
                 _longTermMemories.value = ltm
                 s.longTermMemory = if (ltm.isEmpty()) null else ltm.joinToString("\n") { "[${it.category}] ${it.keyName}: ${it.value}" }
@@ -438,16 +475,143 @@ class MainViewModel @Inject constructor(
     // ── Send message ───────────────────────────────────────────────────────────
 
     /**
-     * Sends [userInput] to the agent and updates the chat history on success.
+     * Sends [userInput] to the agent or the task orchestrator, depending on request complexity.
      *
-     * Reads all inference settings from the ViewModel's own StateFlows (model, temperature, etc.)
-     * so the UI does not need to pass them as parameters. Acquires [agentMutex] to prevent
-     * interleaving with strategy changes or branch switches.
-     *
-     * On success the turn's messages are persisted and a new [ChatTurn] is appended to [chatHistory].
-     * On failure [UiState.Error] is set with the appropriate overflow flag.
+     * Simple requests go directly to [SimpleAgent.run] (unchanged flow).
+     * Complex requests trigger the Task State Machine: PLANNER + CRITIC run in parallel and
+     * produce a plan that is shown to the user in [taskState] = [TaskState.AwaitingInput].
+     * The mutex is released while the user reads the plan so the UI stays responsive.
      */
     fun sendMessage(userInput: String) {
+        updateAgentConfig()
+
+        viewModelScope.launch {
+            agentMutex.withLock {
+                agent.onToolCall = { status -> _uiState.value = UiState.Loading(toolStatus = status) }
+                _uiState.value = UiState.Loading()
+                val compressedHistory = agent.strategy.buildMessages(agent.historySnapshot())
+                when (val result = orchestrator.detectAndPlan(
+                    userInput               = userInput,
+                    compressedHistory       = compressedHistory,
+                    userProfileInstructions = agent.systemProfileInstructions,
+                    model                   = _selectedModel.value
+                )) {
+                    is TaskOrchestratorUseCase.OrchestratorResult.Simple -> runDirectAnswer(userInput)
+                    is TaskOrchestratorUseCase.OrchestratorResult.PlanReady -> {
+                        _taskState.value = TaskState.AwaitingInput(userInput, result.plan, result.critique)
+                        repository.saveTaskPlan(userInput, result.plan, result.critique)
+                        _uiState.value   = UiState.Idle
+                    }
+                    is TaskOrchestratorUseCase.OrchestratorResult.Failed -> {
+                        _uiState.value = UiState.Error(result.error)
+                    }
+                    else -> Unit
+                }
+            }
+        }
+    }
+
+    /** Approves the current plan and moves to EXECUTION → VALIDATION → DONE. */
+    fun confirmPlan() {
+        val state = _taskState.value as? TaskState.AwaitingInput ?: return
+        updateAgentConfig()
+        viewModelScope.launch {
+            agentMutex.withLock {
+                _uiState.value   = UiState.Loading()
+                _taskState.value = TaskState.Execution(state.userInput, state.plan)
+
+                // Inject the approved plan into agent.history as a system message so context
+                // strategies (Summary, StickyFacts, MemoryLayers) can see and compress it.
+                val planContextMsg = Message(
+                    role    = "system",
+                    content = "=== ЗАДАЧА В РАБОТЕ ===\nЗапрос: ${state.userInput}\n\nУтверждённый план:\n${state.plan}"
+                )
+                agent.appendMessages(listOf(planContextMsg))
+                saveTurnUseCase(
+                    listOf(ChatMessage(
+                        turnId           = turnIdSource.incrementAndGet(),
+                        role             = "system",
+                        messageJson      = gson.toJson(planContextMsg),
+                        displayText      = null,
+                        promptTokens     = null, completionTokens = null,
+                        totalTokens      = null, cachedTokens     = null,
+                        cost             = null, durationSec      = null,
+                        timestamp        = System.currentTimeMillis()
+                    )),
+                    _activeBranchId.value
+                )
+
+                val compressedHistory = agent.strategy.buildMessages(agent.historySnapshot())
+                when (val result = orchestrator.executeAndValidate(
+                    userInput               = state.userInput,
+                    plan                    = state.plan,
+                    compressedHistory       = compressedHistory,
+                    userProfileInstructions = agent.systemProfileInstructions,
+                    model                   = _selectedModel.value
+                )) {
+                    is TaskOrchestratorUseCase.OrchestratorResult.ExecutionDone -> {
+                        repository.clearTaskPlan()
+                        _taskState.value = TaskState.Done(result.finalAnswer)
+                        persistOrchestratorResult(state.userInput, result.finalAnswer)
+                        _taskState.value = TaskState.Idle
+                        _uiState.value   = UiState.Idle
+                    }
+                    is TaskOrchestratorUseCase.OrchestratorResult.ValidationFailed -> {
+                        repository.clearTaskPlan()
+                        _taskState.value = TaskState.Error("Валидация не пройдена: ${result.reason}")
+                        _uiState.value   = UiState.Idle
+                    }
+                    is TaskOrchestratorUseCase.OrchestratorResult.Failed -> {
+                        repository.clearTaskPlan()
+                        _taskState.value = TaskState.Idle
+                        _uiState.value   = UiState.Error(result.error)
+                    }
+                    else -> Unit
+                }
+            }
+        }
+    }
+
+    /** Rejects the current plan with an optional [reason] and triggers replanning. */
+    fun rejectPlan(reason: String = "") {
+        val state = _taskState.value as? TaskState.AwaitingInput ?: return
+        updateAgentConfig()
+        viewModelScope.launch {
+            agentMutex.withLock {
+                _uiState.value   = UiState.Loading()
+                _taskState.value = TaskState.Replanning(state.userInput, state.plan, reason)
+                val compressedHistory = agent.strategy.buildMessages(agent.historySnapshot())
+                when (val result = orchestrator.replan(
+                    userInput               = state.userInput,
+                    previousPlan            = state.plan,
+                    rejectionReason         = reason,
+                    compressedHistory       = compressedHistory,
+                    userProfileInstructions = agent.systemProfileInstructions,
+                    model                   = _selectedModel.value
+                )) {
+                    is TaskOrchestratorUseCase.OrchestratorResult.PlanReady -> {
+                        _taskState.value = TaskState.AwaitingInput(state.userInput, result.plan, result.critique)
+                        repository.saveTaskPlan(state.userInput, result.plan, result.critique)
+                        _uiState.value   = UiState.Idle
+                    }
+                    is TaskOrchestratorUseCase.OrchestratorResult.Failed -> {
+                        repository.clearTaskPlan()
+                        _taskState.value = TaskState.Idle
+                        _uiState.value   = UiState.Error(result.error)
+                    }
+                    else -> Unit
+                }
+            }
+        }
+    }
+
+    /** Resets [taskState] to [TaskState.Idle] without any further action. */
+    fun dismissTaskState() {
+        _taskState.value = TaskState.Idle
+        viewModelScope.launch { repository.clearTaskPlan() }
+    }
+
+    private fun updateAgentConfig() {
         val thinking = _thinkingEnabled.value
         agent.updateConfig(
             SimpleAgent.AgentConfig(
@@ -458,34 +622,50 @@ class MainViewModel @Inject constructor(
                 reasoningEffort = _reasoningEffort.value.takeIf { thinking }
             )
         )
-        agent.onToolCall = { status -> _uiState.value = UiState.Loading(toolStatus = status) }
+    }
 
-        viewModelScope.launch {
-            agentMutex.withLock {
-                _uiState.value = UiState.Loading()
-
-                when (val result = agent.run(userInput)) {
-                    is SimpleAgent.AgentResult.Success -> {
-                        val branchId = _activeBranchId.value
-                        saveTurnUseCase(result.turnMessages.toDomainMessages(result), branchId)
-                        val lastId = repository.getLastMessageIdForBranch(branchId)
-                        _chatHistory.value += ChatTurn(
-                            userMessage   = userInput,
-                            agentResponse = result.response,
-                            tokenInfo     = result.tokenInfo,
-                            cost          = result.cost,
-                            durationSec   = result.durationSec,
-                            lastMessageId = lastId
-                        )
-                        _shortTermCount.value = agent.historySnapshot().size
-                        _uiState.value = UiState.Idle
-                    }
-                    is SimpleAgent.AgentResult.Failure -> {
-                        _uiState.value = UiState.Error(result.error, isContextOverflow = result.isContextOverflow)
-                    }
-                }
+    private suspend fun runDirectAnswer(userInput: String) {
+        when (val result = agent.run(userInput)) {
+            is SimpleAgent.AgentResult.Success -> {
+                val branchId = _activeBranchId.value
+                val lastId = saveTurnUseCase(result.turnMessages.toDomainMessages(result), branchId)
+                _chatHistory.value = (_chatHistory.value + ChatTurn(
+                    userMessage   = userInput,
+                    agentResponse = result.response,
+                    tokenInfo     = result.tokenInfo,
+                    cost          = result.cost,
+                    durationSec   = result.durationSec,
+                    lastMessageId = lastId
+                )).toImmutableList()
+                _shortTermCount.value = agent.historySnapshot().size
+                _uiState.value = UiState.Idle
+                // afterTurn (fact/memory extraction) runs off the critical path so the user
+                // can type their next message while extraction happens in the background.
+                val historySnapshot = agent.historySnapshot().toMutableList()
+                val currentStrategy = agent.strategy
+                viewModelScope.launch { currentStrategy.afterTurn(historySnapshot) }
+            }
+            is SimpleAgent.AgentResult.Failure -> {
+                _uiState.value = UiState.Error(result.error, isContextOverflow = result.isContextOverflow)
             }
         }
+    }
+
+    private suspend fun persistOrchestratorResult(userInput: String, finalAnswer: String) {
+        val userMsg      = Message(role = "user",      content = userInput)
+        val assistantMsg = Message(role = "assistant", content = finalAnswer)
+        agent.appendMessages(listOf(userMsg, assistantMsg))
+        val branchId = _activeBranchId.value
+        val lastId = saveTurnUseCase(listOf(userMsg, assistantMsg).toDomainMessagesSimple(), branchId)
+        _chatHistory.value = (_chatHistory.value + ChatTurn(
+            userMessage   = userInput,
+            agentResponse = finalAnswer,
+            tokenInfo     = null,
+            cost          = null,
+            durationSec   = null,
+            lastMessageId = lastId
+        )).toImmutableList()
+        _shortTermCount.value = agent.historySnapshot().size
     }
 
     // ── Branch management ──────────────────────────────────────────────────────
@@ -579,11 +759,13 @@ class MainViewModel @Inject constructor(
             clearFactsUseCase()
             clearWorkingMemoryUseCase()
             repository.resetBranches()
+            repository.clearTaskPlan()
 
-            agent.reset()
-            _chatHistory.value    = emptyList()
+            agentMutex.withLock { agent.reset() }
+            _chatHistory.value    = persistentListOf()
             _auxData.value        = null
             _activeBranchId.value = MAIN_BRANCH_ID
+            _taskState.value      = TaskState.Idle
             _uiState.value        = UiState.Idle
             _shortTermCount.value = 0
 
@@ -759,6 +941,26 @@ class MainViewModel @Inject constructor(
         }
     }
 
+    /** Converts a raw [Message] list to [ChatMessage] objects without token stats (orchestrator path). */
+    private fun List<Message>.toDomainMessagesSimple(): List<ChatMessage> {
+        val turnId = turnIdSource.incrementAndGet()
+        return mapIndexed { index, message ->
+            ChatMessage(
+                turnId           = turnId,
+                role             = message.role,
+                messageJson      = gson.toJson(message),
+                displayText      = message.content,
+                promptTokens     = null,
+                completionTokens = null,
+                totalTokens      = null,
+                cachedTokens     = null,
+                cost             = null,
+                durationSec      = null,
+                timestamp        = System.currentTimeMillis() + index
+            )
+        }
+    }
+
     /**
      * Groups a flat list of [ChatMessage]s by [ChatMessage.turnId] and converts each group
      * into a [ChatTurn] for display.
@@ -766,10 +968,11 @@ class MainViewModel @Inject constructor(
      * Groups without both a user and an assistant message are silently skipped (they represent
      * incomplete turns or pure tool messages that have no visible bubble).
      */
-    private fun List<ChatMessage>.toChatTurns(): List<ChatTurn> =
+    private fun List<ChatMessage>.toChatTurns(): ImmutableList<ChatTurn> =
         groupBy { it.turnId }
             .values
             .sortedBy { group -> group.minOf { it.timestamp } }
+            .takeLast(MAX_DISPLAY_TURNS)
             .mapNotNull { group ->
                 val userMsg      = group.find     { it.role == "user"      } ?: return@mapNotNull null
                 val assistantMsg = group.findLast { it.role == "assistant" } ?: return@mapNotNull null
@@ -788,5 +991,5 @@ class MainViewModel @Inject constructor(
                     durationSec   = assistantMsg.durationSec,
                     lastMessageId = assistantMsg.id.takeIf { it > 0 }
                 )
-            }
+            }.toImmutableList()
 }

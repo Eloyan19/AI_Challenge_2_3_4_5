@@ -5,6 +5,9 @@ import android.content.Context
 import android.content.SharedPreferences
 import com.example.petapp.BuildConfig
 import com.example.petapp.data.DeepSeekApiService
+import com.example.petapp.data.GuardrailsLoader
+import com.example.petapp.domain.model.LlmProviderConfig
+import com.example.petapp.domain.model.ModelPricing
 import com.example.petapp.ui.MainViewModel
 import com.google.gson.Gson
 import dagger.Module
@@ -32,6 +35,12 @@ object AppModule {
     @Provides
     @Singleton
     fun provideGson(): Gson = Gson()
+
+    /** Loader for [assets/guardrails.json]; singleton so the file is read only once at startup. */
+    @Provides
+    @Singleton
+    fun provideGuardrailsLoader(application: Application, gson: Gson): GuardrailsLoader =
+        GuardrailsLoader(application, gson)
 
     /** [SharedPreferences] file that persists context strategy settings between sessions. */
     @Provides
@@ -93,4 +102,31 @@ object AppModule {
     @Provides
     @Named("yandexKey")
     fun provideYandexKey(): String = BuildConfig.YANDEX_SEARCH_KEY
+
+    /** DeepSeek provider configuration: available models, context limit, and per-model pricing. */
+    @Provides
+    @Singleton
+    fun provideDeepSeekProviderConfig(): LlmProviderConfig = LlmProviderConfig(
+        providerName    = "DeepSeek",
+        availableModels = listOf("deepseek-v4-flash", "deepseek-v4-pro"),
+        defaultModel    = "deepseek-v4-flash",
+        backgroundModel = "deepseek-v4-flash",
+        contextLimit    = 128_000,
+        supportsThinking = true,
+        supportsTools    = true,
+        modelPricing = listOf(
+            ModelPricing(
+                model                = "deepseek-v4-flash",
+                costPerMInputCached  = 0.0028,
+                costPerMInputUncached = 0.14,
+                costPerMOutput       = 0.28
+            ),
+            ModelPricing(
+                model                = "deepseek-v4-pro",
+                costPerMInputCached  = 0.003625,
+                costPerMInputUncached = 0.435,
+                costPerMOutput       = 0.87
+            )
+        )
+    )
 }

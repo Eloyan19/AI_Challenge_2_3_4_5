@@ -2,6 +2,7 @@ package com.example.petapp.data.local
 
 import androidx.room.ColumnInfo
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
 /**
@@ -24,7 +25,10 @@ import androidx.room.PrimaryKey
  * @property durationSec Wall-clock seconds for the API call.
  * @property timestamp Unix epoch millis; offset by message index to preserve intra-turn order.
  */
-@Entity(tableName = "chat_messages")
+@Entity(
+    tableName = "chat_messages",
+    indices = [Index("branch_id"), Index("turnId")]
+)
 data class ChatMessageEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     @ColumnInfo(name = "branch_id") val branchId: Long = 1L,

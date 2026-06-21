@@ -1,10 +1,11 @@
 package com.example.petapp.domain.strategy
 
 import android.util.Log
-import com.example.petapp.data.ChatRequest
-import com.example.petapp.data.DeepSeekApiService
-import com.example.petapp.data.Message
+import com.example.petapp.domain.LlmService
+import com.example.petapp.domain.model.LlmProviderConfig
+import com.example.petapp.domain.model.LlmRequest
 import com.example.petapp.domain.model.LongTermMemoryEntry
+import com.example.petapp.domain.model.Message
 import com.example.petapp.domain.model.StrategyType
 
 /**
@@ -14,7 +15,8 @@ import com.example.petapp.domain.model.StrategyType
  * - Layer 3 (Long-term): persistent facts across sessions (injected from DB, read-only here)
  */
 class MemoryLayersStrategy(
-    private val apiService: DeepSeekApiService,
+    private val llmService: LlmService,
+    private val providerConfig: LlmProviderConfig,
     var shortTermWindow: Int = 8
 ) : ContextStrategy {
 
@@ -69,14 +71,13 @@ class MemoryLayersStrategy(
     suspend fun extractLongTermFacts(history: List<Message>): List<LongTermMemoryEntry>? {
         return try {
             val prompt = buildLongTermPrompt(history)
-            val request = ChatRequest(
-                model = "deepseek-v4-flash",
-                messages = listOf(Message(role = "user", content = prompt)),
-                maxTokens = 600,
+            val request = LlmRequest(
+                model       = providerConfig.backgroundModel,
+                messages    = listOf(Message(role = "user", content = prompt)),
+                maxTokens   = 600,
                 temperature = 0.2
             )
-            val response = apiService.getChatCompletion(request)
-                .choices?.firstOrNull()?.message?.content ?: return null
+            val response = llmService.chat(request).content ?: return null
             parseLongTermFacts(response)
         } catch (e: Exception) {
             Log.e("MemoryLayersStrategy", "Long-term extraction failed: ${e.localizedMessage}")
@@ -86,13 +87,13 @@ class MemoryLayersStrategy(
 
     private suspend fun extractWorkingMemory(messages: List<Message>): String? {
         return try {
-            val request = ChatRequest(
-                model = "deepseek-v4-flash",
-                messages = listOf(Message(role = "user", content = buildWorkingPrompt(messages))),
-                maxTokens = 300,
+            val request = LlmRequest(
+                model       = providerConfig.backgroundModel,
+                messages    = listOf(Message(role = "user", content = buildWorkingPrompt(messages))),
+                maxTokens   = 300,
                 temperature = 0.2
             )
-            apiService.getChatCompletion(request).choices?.firstOrNull()?.message?.content
+            llmService.chat(request).content
         } catch (e: Exception) {
             Log.e("MemoryLayersStrategy", "Working memory extraction failed: ${e.localizedMessage}")
             null

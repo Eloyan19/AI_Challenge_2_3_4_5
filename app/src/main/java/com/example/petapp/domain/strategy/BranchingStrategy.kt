@@ -1,6 +1,6 @@
 package com.example.petapp.domain.strategy
 
-import com.example.petapp.data.Message
+import com.example.petapp.domain.model.Message
 import com.example.petapp.domain.model.StrategyType
 
 /**

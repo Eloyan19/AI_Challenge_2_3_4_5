@@ -25,10 +25,20 @@
 -keepattributes *Annotation*
 -dontwarn sun.misc.**
 -keep class com.google.gson.** { *; }
-# Keep all data classes used for JSON serialization / deserialization
--keep class com.example.petapp.data.** { *; }
--keepclassmembers class com.example.petapp.data.** {
-    <fields>;
+# Keep only Gson DTO classes (API request/response models and guardrails config).
+# Other classes in the data package (Agent, ToolExecutor, AppModule, etc.) are intentionally
+# left to R8 obfuscation to raise the bar for reverse-engineering API key logic.
+-keep class com.example.petapp.data.Models** { *; }
+-keep class com.example.petapp.data.GuardrailsLoader$* { *; }
+-keepclassmembers class * {
+    @com.google.gson.annotations.SerializedName <fields>;
+}
+
+# ── Logging — strip debug logs from release builds ────────────────────────────
+# Log.d / Log.v calls are removed by R8; Log.w / Log.e are kept for crash visibility.
+-assumenosideeffects class android.util.Log {
+    public static int d(...);
+    public static int v(...);
 }
 
 # ── Room ──────────────────────────────────────────────────────────────────────

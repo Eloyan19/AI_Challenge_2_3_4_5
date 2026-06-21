@@ -103,4 +103,7 @@ dependencies {
 
     // Lifecycle runtime Compose (collectAsStateWithLifecycle)
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.6")
+
+    // Stable immutable collections for Compose — prevents full-list recomposition on append
+    implementation("org.jetbrains.kotlinx:kotlinx-collections-immutable:0.3.7")
 }

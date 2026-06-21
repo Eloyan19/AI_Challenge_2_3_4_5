@@ -3,6 +3,7 @@ package com.example.petapp.domain.repository
 import com.example.petapp.domain.model.Branch
 import com.example.petapp.domain.model.ChatMessage
 import com.example.petapp.domain.model.LongTermMemoryEntry
+import com.example.petapp.domain.model.TaskPlanData
 import com.example.petapp.domain.model.UserProfile
 
 /**
@@ -22,8 +23,8 @@ interface ChatRepository {
     /** Returns all persisted messages across all branches, ordered by timestamp ascending. */
     suspend fun getAllMessages(): List<ChatMessage>
 
-    /** Persists [messages] to the database (insert-only; no upsert). */
-    suspend fun saveMessages(messages: List<ChatMessage>)
+    /** Persists [messages] to the database and returns the auto-generated ID of the last inserted row. */
+    suspend fun saveMessages(messages: List<ChatMessage>): Long?
 
     /** Deletes all messages, the summary, and the sticky facts (does not touch branches). */
     suspend fun clearAll()
@@ -128,4 +129,15 @@ interface ChatRepository {
 
     /** Deletes the profile with the given [id]. */
     suspend fun deleteProfile(id: Long)
+
+    // ── Task plan (Task State Machine) ─────────────────────────────────────────
+
+    /** Returns the pending task plan, or null if none is awaiting confirmation. */
+    suspend fun getTaskPlan(): TaskPlanData?
+
+    /** Persists the pending plan so it survives process death. */
+    suspend fun saveTaskPlan(userInput: String, plan: String, critique: String?)
+
+    /** Clears the pending plan (called on confirm, reject-fail, dismiss, or new session). */
+    suspend fun clearTaskPlan()
 }

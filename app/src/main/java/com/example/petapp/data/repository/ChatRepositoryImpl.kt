@@ -10,6 +10,8 @@ import com.example.petapp.data.local.StickyFactsDao
 import com.example.petapp.data.local.StickyFactsEntity
 import com.example.petapp.data.local.SummaryDao
 import com.example.petapp.data.local.SummaryEntity
+import com.example.petapp.data.local.TaskPlanDao
+import com.example.petapp.data.local.TaskPlanEntity
 import com.example.petapp.data.local.UserProfileDao
 import com.example.petapp.data.local.UserProfileEntity
 import com.example.petapp.data.local.WorkingMemoryDao
@@ -17,6 +19,7 @@ import com.example.petapp.data.local.WorkingMemoryEntity
 import com.example.petapp.domain.model.Branch
 import com.example.petapp.domain.model.ChatMessage
 import com.example.petapp.domain.model.LongTermMemoryEntry
+import com.example.petapp.domain.model.TaskPlanData
 import com.example.petapp.domain.model.UserProfile
 import com.example.petapp.domain.repository.ChatRepository
 import javax.inject.Inject
@@ -37,7 +40,8 @@ class ChatRepositoryImpl @Inject constructor(
     private val branchDao: BranchDao,
     private val workingMemoryDao: WorkingMemoryDao,
     private val longTermMemoryDao: LongTermMemoryDao,
-    private val userProfileDao: UserProfileDao
+    private val userProfileDao: UserProfileDao,
+    private val taskPlanDao: TaskPlanDao
 ) : ChatRepository {
 
     // ── Linear history ──────────────────────────────────────────────────────────
@@ -45,8 +49,8 @@ class ChatRepositoryImpl @Inject constructor(
     override suspend fun getAllMessages(): List<ChatMessage> =
         dao.getAll().map { it.toDomain() }
 
-    override suspend fun saveMessages(messages: List<ChatMessage>) =
-        dao.insertAll(messages.map { it.toEntity() })
+    override suspend fun saveMessages(messages: List<ChatMessage>): Long? =
+        dao.insertAll(messages.map { it.toEntity() }).lastOrNull()
 
     override suspend fun clearAll() {
         dao.clearAll()
@@ -160,6 +164,17 @@ class ChatRepositoryImpl @Inject constructor(
     }
 
     override suspend fun deleteProfile(id: Long) = userProfileDao.deleteById(id)
+
+    // ── Task plan ─────────────────────────────────────────────────────────────────
+
+    override suspend fun getTaskPlan(): TaskPlanData? =
+        taskPlanDao.get()?.let { TaskPlanData(it.userInput, it.plan, it.critique) }
+
+    override suspend fun saveTaskPlan(userInput: String, plan: String, critique: String?) =
+        taskPlanDao.save(TaskPlanEntity(userInput = userInput, plan = plan,
+                                       critique = critique, updatedAt = System.currentTimeMillis()))
+
+    override suspend fun clearTaskPlan() = taskPlanDao.clear()
 
     // ── Mapping ──────────────────────────────────────────────────────────────────
 
