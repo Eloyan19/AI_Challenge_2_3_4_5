@@ -570,6 +570,28 @@ LlmProviderConfig(
 
 ---
 
+## Тесты
+
+Фреймворк: **JUnit 4 + MockK + kotlinx-coroutines-test**.
+
+| Файл | Что покрывает | Тестов |
+|---|---|---|
+| `DetectComplexityUseCaseTest` | Эвристический фильтр (явно SIMPLE / явно COMPLEX без LLM-вызова) и LLM-fallback | 20 |
+| `MemoryLayersStrategyTest` | Парсинг долговременных фактов из JSON (включая markdown-обёртки, пустые/битые ответы), `buildMessages` с разными слоями, guard `isTurnSignificant` | 22 |
+| `TaskOrchestratorUseCaseTest` | `detectAndPlan`, `executeAndValidate`, `replan` — все ветви дерева решений | 17 |
+| `ChatUseCasesTest` | Делегирование use cases к репозиторию | 11 |
+
+**Итого: 70 unit-тестов.**
+
+### Принципы покрытия
+
+- **Use cases** тестируются изолированно через mockk-заглушки зависимостей; реальные LLM- и DB-вызовы не происходят.
+- **Стратегии** — только чистая логика: парсинг, фильтрация, сборка сообщений. Внешние вызовы мокируются.
+- **Swarm-роли** матчатся через `eq(listOf(AgentRole.X))` — тест явно проверяет какой именно набор агентов вызывается на каждом шаге оркестратора.
+- **VALIDATOR** покрыт тремя форматами FAIL-ответа: `"FAIL\nпричина"`, `"FAIL причина"`, `"FAIL"` — потому что модель на практике возвращает любой из них.
+
+---
+
 ## Настройка
 
 Добавь ключи в `local.properties`:
