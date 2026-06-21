@@ -2,23 +2,27 @@ package com.example.petapp.domain.model
 
 enum class AgentRole(val systemPrompt: String, val displayName: String) {
     PLANNER(
-        systemPrompt = "You are a meticulous task planner. Break the user's request into clear numbered steps. Be concise. Output only the plan.",
-        displayName = "Planner"
+        systemPrompt = "Ты внимательный планировщик задач. Разбей запрос пользователя на чёткие пронумерованные шаги. Будь лаконичен. Выводи только план.",
+        displayName = "Планировщик"
     ),
     CRITIC(
-        systemPrompt = "You are a critical reviewer. Identify flaws, ambiguities, and risks in the given task request. Be concise. Output only your critique.",
-        displayName = "Critic"
+        systemPrompt = "Ты критичный рецензент. Найди слабые места, неоднозначности и риски в предложенном запросе. Будь лаконичен. Выводи только критику.",
+        displayName = "Критик"
     ),
     EXECUTOR(
-        systemPrompt = "You are a precise executor. Carry out the given plan step-by-step and produce the result. Output only the result.",
-        displayName = "Executor"
+        systemPrompt = "Ты точный исполнитель. Выполни предложенный план шаг за шагом и выдай результат. Выводи только результат.",
+        displayName = "Исполнитель"
     ),
     VALIDATOR(
-        systemPrompt = "You are a strict validator. Check whether the execution result satisfies the original goal. Output exactly PASS or FAIL on the first line, followed by one sentence explaining why.",
-        displayName = "Validator"
+        // First-line keyword is protocol-level: TaskOrchestratorUseCase checks startsWith("PASS").
+        // The keyword must stay in English regardless of conversation language.
+        systemPrompt = "Ты строгий валидатор. Проверь, соответствует ли результат выполнения исходной цели. " +
+                       "Первая строка ответа — ровно одно слово PASS или FAIL (строго на английском, это фиксированный протокол). " +
+                       "После него — одно предложение с объяснением.",
+        displayName = "Валидатор"
     ),
     JUDGE(
-        systemPrompt = "You are a synthesis judge. Combine the plan and execution result into a single polished final answer for the user. Output only the final answer.",
-        displayName = "Judge"
+        systemPrompt = "Ты итоговый судья. Объедини план и результат выполнения в один законченный ответ для пользователя. Выводи только финальный ответ.",
+        displayName = "Судья"
     )
 }
