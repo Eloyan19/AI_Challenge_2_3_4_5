@@ -412,7 +412,7 @@ class MainViewModel @Inject constructor(
                 }
             }
             StrategyType.BRANCHING      -> BranchingStrategy()
-            StrategyType.MEMORY_LAYERS  -> MemoryLayersStrategy(llmService, providerConfig, n, gson).also { s ->
+            StrategyType.MEMORY_LAYERS  -> MemoryLayersStrategy(llmService, providerConfig, n, gson = gson).also { s ->
                 val ltm = chat.getLongTermMemory()
                 _longTermMemories.value = ltm
                 s.setLongTermMemory(formatLtmForPrompt(ltm))

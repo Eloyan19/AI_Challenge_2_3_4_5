@@ -10,6 +10,7 @@ import com.example.petapp.domain.model.Message
 import com.example.petapp.domain.strategy.MemoryLayersStrategy
 import com.google.gson.Gson
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
@@ -351,5 +352,147 @@ class MemoryLayersStrategyTest {
 
         // Then: returns empty (long-term memory is gone)
         assertTrue(result.isEmpty())
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Target D: afterTurn — isTurnSignificant guard
+    // ─────────────────────────────────────────────────────────────────────
+
+    private fun significantHistory(): List<Message> {
+        val userWords   = "слово ".repeat(6).trim()   // 6 words
+        val assistWords = "слово ".repeat(7).trim()   // 7 words → total 13 >= MIN_TURN_WORDS
+        return listOf(
+            Message(role = "user",      content = userWords),
+            Message(role = "assistant", content = assistWords)
+        )
+    }
+
+    @Test
+    fun `afterTurn skips LLM when history has fewer than 2 content messages`() = runTest {
+        val history = listOf(Message(role = "user", content = "привет"))
+        strategy.afterTurn(history)
+        coVerify(exactly = 0) { llmService.chat(any()) }
+    }
+
+    @Test
+    fun `afterTurn skips LLM when last assistant message has no content`() = runTest {
+        // Tool-call-only turn: assistant message with null content
+        val history = listOf(
+            Message(role = "user",      content = "покажи погоду в москве"),
+            Message(role = "assistant", content = null),
+            Message(role = "tool",      content = """{"temp":20}""")
+        )
+        strategy.afterTurn(history)
+        coVerify(exactly = 0) { llmService.chat(any()) }
+    }
+
+    @Test
+    fun `afterTurn skips LLM when combined word count is below threshold`() = runTest {
+        // 1 + 3 = 4 words < MIN_TURN_WORDS
+        val history = listOf(
+            Message(role = "user",      content = "привет"),
+            Message(role = "assistant", content = "Привет! Чем помочь?")
+        )
+        strategy.afterTurn(history)
+        coVerify(exactly = 0) { llmService.chat(any()) }
+    }
+
+    @Test
+    fun `afterTurn calls LLM when turn is significant`() = runTest {
+        coEvery { llmService.chat(any()) } returns LlmResponse(
+            content = "Task: learning coroutines", toolCalls = null, finishReason = "stop", usage = null
+        )
+        strategy.afterTurn(significantHistory())
+        coVerify(exactly = 1) { llmService.chat(any()) }
+    }
+
+    @Test
+    fun `afterTurn updates working memory when LLM returns content`() = runTest {
+        val extracted = "Task: learning coroutines. Entity: Kotlin."
+        coEvery { llmService.chat(any()) } returns LlmResponse(
+            content = extracted, toolCalls = null, finishReason = "stop", usage = null
+        )
+        strategy.afterTurn(significantHistory())
+        assertEquals(extracted, strategy.workingMemory)
+    }
+
+    @Test
+    fun `afterTurn does not update working memory when turn is skipped`() = runTest {
+        val initial = "existing working memory"
+        strategy.restoreWorkingMemory(initial)
+
+        val history = listOf(
+            Message(role = "user",      content = "ок"),
+            Message(role = "assistant", content = "Понял")
+        )
+        strategy.afterTurn(history)
+
+        assertEquals(initial, strategy.workingMemory)
+        coVerify(exactly = 0) { llmService.chat(any()) }
+    }
+
+    @Test
+    fun `afterTurn fires onAuxDataUpdated only when LLM extraction succeeds`() = runTest {
+        var callbackInvoked = false
+        strategy.onAuxDataUpdated = { callbackInvoked = true }
+
+        coEvery { llmService.chat(any()) } returns LlmResponse(
+            content = "Task: test.", toolCalls = null, finishReason = "stop", usage = null
+        )
+        strategy.afterTurn(significantHistory())
+        assertTrue(callbackInvoked)
+    }
+
+    @Test
+    fun `afterTurn does not fire onAuxDataUpdated when turn is skipped`() = runTest {
+        var callbackInvoked = false
+        strategy.onAuxDataUpdated = { callbackInvoked = true }
+
+        val history = listOf(
+            Message(role = "user",      content = "привет"),
+            Message(role = "assistant", content = "Привет!")
+        )
+        strategy.afterTurn(history)
+        assertFalse(callbackInvoked)
+    }
+
+    @Test
+    fun `custom minTurnWords threshold is respected`() = runTest {
+        val lowThresholdStrategy = MemoryLayersStrategy(
+            llmService     = llmService,
+            providerConfig = providerConfig,
+            minTurnWords   = 3
+        )
+        coEvery { llmService.chat(any()) } returns LlmResponse(
+            content = "Task: greet.", toolCalls = null, finishReason = "stop", usage = null
+        )
+
+        // 1 + 3 = 4 words — below default threshold (12) but above custom threshold (3)
+        val history = listOf(
+            Message(role = "user",      content = "привет"),
+            Message(role = "assistant", content = "Привет! Как дела?")
+        )
+        lowThresholdStrategy.afterTurn(history)
+        coVerify(exactly = 1) { llmService.chat(any()) }
+    }
+
+    @Test
+    fun `minTurnWords can be changed at runtime`() = runTest {
+        coEvery { llmService.chat(any()) } returns LlmResponse(
+            content = "Task: greet.", toolCalls = null, finishReason = "stop", usage = null
+        )
+        val history = listOf(
+            Message(role = "user",      content = "привет"),
+            Message(role = "assistant", content = "Привет! Как дела?")
+        )
+
+        // Default threshold (12) — skips this turn
+        strategy.afterTurn(history)
+        coVerify(exactly = 0) { llmService.chat(any()) }
+
+        // Lower the threshold — same turn now passes
+        strategy.minTurnWords = 3
+        strategy.afterTurn(history)
+        coVerify(exactly = 1) { llmService.chat(any()) }
     }
 }

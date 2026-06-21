@@ -20,6 +20,7 @@ class MemoryLayersStrategy(
     private val llmService: LlmService,
     private val providerConfig: LlmProviderConfig,
     var shortTermWindow: Int = 8,
+    var minTurnWords: Int = MIN_TURN_WORDS,
     private val gson: Gson = Gson()
 ) : ContextStrategy {
 
@@ -58,12 +59,40 @@ class MemoryLayersStrategy(
 
     // After each turn: update working memory via LLM
     override suspend fun afterTurn(history: List<Message>) {
+        if (!isTurnSignificant(history)) {
+            Log.d("MemoryLayersStrategy", "afterTurn skipped: turn not significant")
+            return
+        }
         val updated = extractWorkingMemory(history.takeLast(shortTermWindow))
         if (updated != null) {
             _workingMemory = updated
             onAuxDataUpdated?.invoke(updated)
             Log.d("MemoryLayersStrategy", "Working memory updated (${updated.length} chars)")
         }
+    }
+
+    /**
+     * Returns true only when the last turn contains enough content to justify an LLM extraction call.
+     *
+     * Skips when:
+     * - Fewer than 2 user/assistant messages with content exist (too early to extract context).
+     * - The last assistant message has no text (tool-call-only turn, nothing to extract).
+     * - The combined word count of the last user + last assistant messages is below
+     *   [MIN_TURN_WORDS] (trivial exchange: greetings, one-word answers, acknowledgments).
+     */
+    private fun isTurnSignificant(history: List<Message>): Boolean {
+        val contentMessages = history.filter {
+            (it.role == "user" || it.role == "assistant") && !it.content.isNullOrBlank()
+        }
+        if (contentMessages.size < 2) return false
+
+        val lastAssistant = history.lastOrNull { it.role == "assistant" }
+        if (lastAssistant?.content.isNullOrBlank()) return false
+
+        val lastUser = history.lastOrNull { it.role == "user" }
+        val userWords      = lastUser?.content?.split(Regex("\\s+"))?.count { it.isNotEmpty() } ?: 0
+        val assistantWords = lastAssistant.content!!.split(Regex("\\s+")).count { it.isNotEmpty() }
+        return (userWords + assistantWords) >= minTurnWords
     }
 
     // Reset clears working memory only (long-term survives)
@@ -129,6 +158,11 @@ class MemoryLayersStrategy(
             sb.append("$label: ${msg.content?.take(400)}\n")
         }
         return sb.toString()
+    }
+
+    companion object {
+        /** Minimum combined word count of last user + assistant messages to trigger extraction. */
+        const val MIN_TURN_WORDS = 12
     }
 
     private data class LtmJsonEntry(val category: String?, val key: String?, val value: String?)
