@@ -22,7 +22,8 @@ class TaskOrchestratorUseCase(
         userInput: String,
         compressedHistory: List<Message>,
         userProfileInstructions: String?,
-        model: String
+        model: String,
+        guardrailsInstruction: String? = null
     ): OrchestratorResult {
         if (!detectComplexity(userInput)) return OrchestratorResult.Simple
 
@@ -32,7 +33,8 @@ class TaskOrchestratorUseCase(
             taskState               = TaskState.Planning(userInput),
             compressedHistory       = compressedHistory,
             userProfileInstructions = userProfileInstructions,
-            model                   = model
+            model                   = model,
+            guardrailsInstruction   = guardrailsInstruction
         )
 
         val planOutput = results[AgentRole.PLANNER]?.getOrNull()
@@ -50,6 +52,7 @@ class TaskOrchestratorUseCase(
         compressedHistory: List<Message>,
         userProfileInstructions: String?,
         model: String,
+        guardrailsInstruction: String? = null,
         onValidating: suspend (executionResult: String) -> Unit = {}
     ): OrchestratorResult {
         val execResults = runSwarm(
@@ -58,7 +61,8 @@ class TaskOrchestratorUseCase(
             taskState               = TaskState.Execution(userInput, plan),
             compressedHistory       = compressedHistory,
             userProfileInstructions = userProfileInstructions,
-            model                   = model
+            model                   = model,
+            guardrailsInstruction   = guardrailsInstruction
         )
 
         val executionResult = execResults[AgentRole.EXECUTOR]?.getOrNull()
@@ -73,14 +77,19 @@ class TaskOrchestratorUseCase(
             taskState               = validationState,
             compressedHistory       = compressedHistory,
             userProfileInstructions = userProfileInstructions,
-            model                   = model
+            model                   = model,
+            guardrailsInstruction   = guardrailsInstruction
         )
 
         val validatorOutput = validationResults[AgentRole.VALIDATOR]?.getOrNull()
             ?: return OrchestratorResult.Failed("Не удалось провести валидацию")
 
         if (!validatorOutput.content.startsWith("PASS", ignoreCase = true)) {
-            val reason = validatorOutput.content.substringAfter(" ").trim()
+            val firstLine = validatorOutput.content.lines().firstOrNull().orEmpty()
+            val rest = validatorOutput.content.removePrefix(firstLine).trimStart('\n', '\r')
+            val reason = rest.ifBlank {
+                firstLine.substringAfter(" ", missingDelimiterValue = "").trim()
+            }.ifBlank { firstLine.trim() }
             return OrchestratorResult.ValidationFailed(reason)
         }
 
@@ -90,7 +99,8 @@ class TaskOrchestratorUseCase(
             taskState               = validationState,
             compressedHistory       = compressedHistory,
             userProfileInstructions = userProfileInstructions,
-            model                   = model
+            model                   = model,
+            guardrailsInstruction   = guardrailsInstruction
         )
 
         val finalAnswer = judgeResults[AgentRole.JUDGE]?.getOrNull()?.content
@@ -105,7 +115,8 @@ class TaskOrchestratorUseCase(
         rejectionReason: String,
         compressedHistory: List<Message>,
         userProfileInstructions: String?,
-        model: String
+        model: String,
+        guardrailsInstruction: String? = null
     ): OrchestratorResult {
         val results = runSwarm(
             roles                   = listOf(AgentRole.PLANNER, AgentRole.CRITIC),
@@ -113,7 +124,8 @@ class TaskOrchestratorUseCase(
             taskState               = TaskState.Replanning(userInput, previousPlan, rejectionReason),
             compressedHistory       = compressedHistory,
             userProfileInstructions = userProfileInstructions,
-            model                   = model
+            model                   = model,
+            guardrailsInstruction   = guardrailsInstruction
         )
 
         val planOutput = results[AgentRole.PLANNER]?.getOrNull()

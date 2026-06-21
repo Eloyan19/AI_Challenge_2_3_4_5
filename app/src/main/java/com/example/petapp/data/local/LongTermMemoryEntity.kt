@@ -2,9 +2,10 @@ package com.example.petapp.data.local
 
 import androidx.room.ColumnInfo
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
-@Entity(tableName = "long_term_memory")
+@Entity(tableName = "long_term_memory", indices = [Index(value = ["key_name"], unique = true)])
 data class LongTermMemoryEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val category: String,

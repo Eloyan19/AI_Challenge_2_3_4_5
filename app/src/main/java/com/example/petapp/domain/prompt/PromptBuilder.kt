@@ -12,6 +12,7 @@ interface PromptBuilder {
         taskState: TaskState,
         compressedHistory: List<Message>,
         userProfileInstructions: String?,
-        model: String
+        model: String,
+        guardrailsInstruction: String? = null
     ): LlmRequest
 }

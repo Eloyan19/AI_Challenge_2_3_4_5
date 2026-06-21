@@ -520,7 +520,8 @@ class MainViewModel @Inject constructor(
                     userInput               = userInput,
                     compressedHistory       = compressedHistory,
                     userProfileInstructions = agent.systemProfileInstructions,
-                    model                   = _selectedModel.value
+                    model                   = _selectedModel.value,
+                    guardrailsInstruction   = agent.guardrailsInstruction
                 )) {
                     is TaskOrchestratorUseCase.OrchestratorResult.Simple -> {
                         setTaskState(TaskState.Idle)
@@ -578,6 +579,7 @@ class MainViewModel @Inject constructor(
                     compressedHistory       = compressedHistory,
                     userProfileInstructions = agent.systemProfileInstructions,
                     model                   = _selectedModel.value,
+                    guardrailsInstruction   = agent.guardrailsInstruction,
                     onValidating            = { execResult ->
                         setTaskState(TaskState.Validation(state.userInput, state.plan, execResult))
                     }
@@ -604,7 +606,10 @@ class MainViewModel @Inject constructor(
                         setTaskState(TaskState.Error(result.error))
                         _uiState.value = UiState.Idle
                     }
-                    else -> Unit
+                    else -> {
+                        android.util.Log.e("MainViewModel", "Unexpected executeAndValidate result: $result")
+                        _uiState.value = UiState.Idle
+                    }
                 }
             }
         }
@@ -614,6 +619,45 @@ class MainViewModel @Inject constructor(
     fun retryFromValidationFailed() {
         val s = _taskState.value as? TaskState.ValidationFailed ?: return
         setTaskState(TaskState.AwaitingInput(s.userInput, s.plan))
+    }
+
+    /** Triggers replanning directly from a validation failure, skipping the AwaitingInput step. */
+    fun replanFromValidationFailed(reason: String = "") {
+        if (_taskState.value !is TaskState.ValidationFailed) return
+        updateAgentConfig()
+        viewModelScope.launch {
+            agentMutex.withLock {
+                val s = _taskState.value as? TaskState.ValidationFailed ?: return@withLock
+                _uiState.value = UiState.Loading()
+                val replanReason = reason.ifBlank { "Валидация не пройдена: ${s.reason}" }
+                setTaskState(TaskState.Replanning(s.userInput, s.plan, replanReason))
+                val compressedHistory = agent.strategy.buildMessages(agent.historySnapshot())
+                when (val result = orchestrator.replan(
+                    userInput               = s.userInput,
+                    previousPlan            = s.plan,
+                    rejectionReason         = replanReason,
+                    compressedHistory       = compressedHistory,
+                    userProfileInstructions = agent.systemProfileInstructions,
+                    model                   = _selectedModel.value,
+                    guardrailsInstruction   = agent.guardrailsInstruction
+                )) {
+                    is TaskOrchestratorUseCase.OrchestratorResult.PlanReady -> {
+                        setTaskState(TaskState.AwaitingInput(s.userInput, result.plan, result.critique))
+                        repository.saveTaskPlan(s.userInput, result.plan, result.critique)
+                        _uiState.value = UiState.Idle
+                    }
+                    is TaskOrchestratorUseCase.OrchestratorResult.Failed -> {
+                        repository.clearTaskPlan()
+                        setTaskState(TaskState.Error(result.error))
+                        _uiState.value = UiState.Idle
+                    }
+                    else -> {
+                        android.util.Log.e("MainViewModel", "Unexpected replan result: $result")
+                        _uiState.value = UiState.Idle
+                    }
+                }
+            }
+        }
     }
 
     /** Rejects the current plan with an optional [reason] and triggers replanning. */
@@ -631,7 +675,8 @@ class MainViewModel @Inject constructor(
                     rejectionReason         = reason,
                     compressedHistory       = compressedHistory,
                     userProfileInstructions = agent.systemProfileInstructions,
-                    model                   = _selectedModel.value
+                    model                   = _selectedModel.value,
+                    guardrailsInstruction   = agent.guardrailsInstruction
                 )) {
                     is TaskOrchestratorUseCase.OrchestratorResult.PlanReady -> {
                         setTaskState(TaskState.AwaitingInput(state.userInput, result.plan, result.critique))

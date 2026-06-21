@@ -18,7 +18,8 @@ object TaskStateMachine {
             }
             is TaskState.Analyzing -> when (to) {
                 is TaskState.Planning,
-                is TaskState.Idle,      // запрос оказался простым
+                is TaskState.AwaitingInput, // plan ready after parallel Planner+Critic run
+                is TaskState.Idle,          // запрос оказался простым
                 is TaskState.Error -> Transition.Allowed
                 else -> forbidden(from, to, "После анализа нужен план")
             }

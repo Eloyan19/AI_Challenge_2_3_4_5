@@ -128,16 +128,16 @@ class ChatRepositoryImpl @Inject constructor(
     override suspend fun getLongTermMemory(): List<LongTermMemoryEntry> =
         longTermMemoryDao.getAll().map { it.toDomain() }
 
-    override suspend fun addLongTermMemory(category: String, keyName: String, value: String): Long =
-        longTermMemoryDao.insert(
-            LongTermMemoryEntity(
-                category  = category,
-                keyName   = keyName,
-                value     = value,
-                createdAt = System.currentTimeMillis(),
-                updatedAt = System.currentTimeMillis()
-            )
-        )
+    override suspend fun addLongTermMemory(category: String, keyName: String, value: String): Long {
+        val now = System.currentTimeMillis()
+        return longTermMemoryDao.upsert(LongTermMemoryEntity(
+            category  = category,
+            keyName   = keyName,
+            value     = value,
+            createdAt = now,
+            updatedAt = now
+        ))
+    }
 
     override suspend fun deleteLongTermMemory(id: Long) =
         longTermMemoryDao.deleteById(id)

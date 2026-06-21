@@ -21,7 +21,8 @@ class RunAgentSwarmUseCase(
         taskState: TaskState,
         compressedHistory: List<Message>,
         userProfileInstructions: String?,
-        model: String
+        model: String,
+        guardrailsInstruction: String? = null
     ): Map<AgentRole, Result<SwarmAgentOutput>> = coroutineScope {
         roles.map { role ->
             async {
@@ -32,7 +33,8 @@ class RunAgentSwarmUseCase(
                         taskState               = taskState,
                         compressedHistory       = compressedHistory,
                         userProfileInstructions = userProfileInstructions,
-                        model                   = model
+                        model                   = model,
+                        guardrailsInstruction   = guardrailsInstruction
                     )
                     val t0 = System.currentTimeMillis()
                     val response = llmService.chat(request)

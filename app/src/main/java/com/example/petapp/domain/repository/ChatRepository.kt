@@ -105,8 +105,8 @@ interface ChatRepository {
     suspend fun getLongTermMemory(): List<LongTermMemoryEntry>
 
     /**
-     * Inserts a new long-term memory entry.
-     * @return The auto-generated id of the new entry.
+     * Inserts a new entry or updates an existing one with the same [keyName] (upsert).
+     * @return The id of the inserted or updated entry.
      */
     suspend fun addLongTermMemory(category: String, keyName: String, value: String): Long
 

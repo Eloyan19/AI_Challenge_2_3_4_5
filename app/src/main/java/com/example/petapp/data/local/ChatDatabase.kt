@@ -20,6 +20,8 @@ import androidx.sqlite.db.SupportSQLiteDatabase
  * - v5 → v6 ([MIGRATION_5_6]): added `task_plan` singleton table for Task State Machine persistence.
  * - v6 → v7 ([MIGRATION_6_7]): added indices on `chat_messages(branch_id)` and `chat_messages(turn_id)`
  *   for faster branch reconstruction and turn grouping queries.
+ * - v7 → v8 ([MIGRATION_7_8]): added unique index on `long_term_memory(key_name)` to enforce
+ *   the upsert invariant and prevent duplicate keys from concurrent insertions.
  *
  * Obtained via [getInstance] which guarantees a single instance per process using
  * double-checked locking. Provided to DI via [com.example.petapp.di.DatabaseModule].
@@ -35,7 +37,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         UserProfileEntity::class,
         TaskPlanEntity::class,
     ],
-    version = 7,
+    version = 8,
     exportSchema = false
 )
 abstract class ChatDatabase : RoomDatabase() {
@@ -145,6 +147,12 @@ abstract class ChatDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_long_term_memory_key_name` ON `long_term_memory` (`key_name`)")
+            }
+        }
+
         /**
          * Returns the singleton [ChatDatabase] instance, creating it on first call.
          *
@@ -159,7 +167,7 @@ abstract class ChatDatabase : RoomDatabase() {
                     ChatDatabase::class.java,
                     "chat_db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
                     .addCallback(object : RoomDatabase.Callback() {
                         override fun onCreate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
                             // Seed the root branch on fresh install.

@@ -13,9 +13,11 @@ class DefaultPromptBuilder : PromptBuilder {
         taskState: TaskState,
         compressedHistory: List<Message>,
         userProfileInstructions: String?,
-        model: String
+        model: String,
+        guardrailsInstruction: String?
     ): LlmRequest {
         val systemMessages = buildList {
+            guardrailsInstruction?.let { add(Message(role = "system", content = it)) }
             add(Message(role = "system", content = role.systemPrompt))
             userProfileInstructions?.let {
                 add(Message(role = "system", content = "=== ИНСТРУКЦИИ ПРОФИЛЯ ===\n$it"))

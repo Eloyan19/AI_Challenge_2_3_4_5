@@ -53,7 +53,7 @@ class MemoryLayersStrategy(
 
     // After each turn: update working memory via LLM
     override suspend fun afterTurn(history: List<Message>) {
-        val updated = extractWorkingMemory(history.takeLast(shortTermWindow * 2))
+        val updated = extractWorkingMemory(history.takeLast(shortTermWindow))
         if (updated != null) {
             _workingMemory = updated
             onAuxDataUpdated?.invoke(updated)

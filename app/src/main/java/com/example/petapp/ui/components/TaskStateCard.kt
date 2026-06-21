@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -43,6 +44,7 @@ fun TaskStateCard(
     onReject: (String) -> Unit,
     onDismiss: () -> Unit,
     onRetry: () -> Unit,
+    onReplan: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
     AnimatedVisibility(
@@ -71,7 +73,7 @@ fun TaskStateCard(
                 is TaskState.ValidationFailed -> ValidationFailedSection(
                     reason    = taskState.reason,
                     onRetry   = onRetry,
-                    onReplan  = { onReject("Валидация не пройдена: ${taskState.reason}") },
+                    onReplan  = { onReplan("Валидация не пройдена: ${taskState.reason}") },
                     onDismiss = onDismiss
                 )
                 is TaskState.Error -> ErrorRow(
@@ -206,9 +208,9 @@ private fun AwaitingInputSection(
                 style    = MaterialTheme.typography.bodySmall,
                 modifier = Modifier
                     .fillMaxWidth()
+                    .heightIn(max = 200.dp)
                     .verticalScroll(rememberScrollState())
-                    .padding(10.dp),
-                maxLines = 8
+                    .padding(10.dp)
             )
         }
 
