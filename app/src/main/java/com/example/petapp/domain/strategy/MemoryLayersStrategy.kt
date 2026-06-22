@@ -16,6 +16,9 @@ import com.google.gson.reflect.TypeToken
  * - Layer 2 (Working): auto-extracted task context after each turn (persisted via [onAuxDataUpdated])
  * - Layer 3 (Long-term): persistent facts across sessions (injected from DB, read-only here)
  *
+ * All layer transitions are logged under the single tag [TAG] so they can be filtered together
+ * in Logcat with: tag:MemoryLayers
+ *
  * @param innerStrategy Controls Layer 1 trimming and message wrapping. Defaults to SlidingWindow(8)
  *   to preserve the original behaviour when constructed without an explicit inner strategy.
  * @param shortTermWindow Controls how many messages are passed to the Layer 2 working-memory
@@ -36,19 +39,29 @@ class MemoryLayersStrategy(
     private var _workingMemory: String? = null
     val workingMemory: String? get() = _workingMemory
 
-    fun restoreWorkingMemory(value: String?) { _workingMemory = value }
+    fun restoreWorkingMemory(value: String?) {
+        _workingMemory = value
+        Log.d(TAG, "L2 restored: ${value?.length ?: 0} chars")
+    }
 
     // Layer 3: Long-term memory — injected externally, read-only inside strategy logic.
     private var _longTermMemory: String? = null
 
-    fun setLongTermMemory(value: String?) { _longTermMemory = value }
+    fun setLongTermMemory(value: String?) {
+        _longTermMemory = value
+        if (value != null) Log.d(TAG, "L3 set: ${value.length} chars")
+        else               Log.d(TAG, "L3 cleared")
+    }
 
     override val auxData: String? get() = _workingMemory
     override var onAuxDataUpdated: ((String?) -> Unit)? = null
 
     // Layer 1: delegate to inner strategy
     override suspend fun prepareContext(history: MutableList<Message>) {
+        val before = history.size
         innerStrategy.prepareContext(history)
+        val after = history.size
+        Log.d(TAG, "L1 prepareContext [${innerStrategy.type.name}]: $before → $after msgs")
     }
 
     // Build: [long-term system] + [working system] + inner strategy result
@@ -63,21 +76,37 @@ class MemoryLayersStrategy(
                 add(Message(role = "system", content = "=== РАБОЧАЯ ПАМЯТЬ (текущая сессия) ===\n$it"))
             }
         }
-        return prefix + innerStrategy.buildMessages(history)
+        val innerResult = innerStrategy.buildMessages(history)
+        val total = prefix + innerResult
+        Log.d(TAG, "L3=${if (_longTermMemory != null) "✓(${_longTermMemory!!.length}ch)" else "✗"} " +
+                   "L2=${if (_workingMemory  != null) "✓(${_workingMemory!!.length}ch)"  else "✗"} " +
+                   "L1=[${innerStrategy.type.name}] ${history.size} msgs → total ${total.size} msgs to LLM")
+        return total
     }
 
     // After each turn: Layer 1 post-processing first, then Layer 2 working memory extraction
     override suspend fun afterTurn(history: List<Message>) {
+        Log.d(TAG, "afterTurn: history=${history.size} msgs, inner=${innerStrategy.type.name}")
         innerStrategy.afterTurn(history)
+
+        val lastUser      = history.lastOrNull { it.role == "user" }
+        val lastAssistant = history.lastOrNull { it.role == "assistant" }
+        val userWords      = lastUser?.content?.split(Regex("\\s+"))?.count { it.isNotEmpty() } ?: 0
+        val assistantWords = lastAssistant?.content?.split(Regex("\\s+"))?.count { it.isNotEmpty() } ?: 0
+        val totalWords = userWords + assistantWords
+
         if (!isTurnSignificant(history)) {
-            Log.d("MemoryLayersStrategy", "afterTurn skipped: turn not significant")
+            Log.d(TAG, "L2 skipped: turn not significant ($totalWords words < $minTurnWords threshold)")
             return
         }
+        Log.d(TAG, "L2 extracting working memory ($totalWords words, ${history.takeLast(shortTermWindow).size} msgs fed to LLM)")
         val updated = extractWorkingMemory(history.takeLast(shortTermWindow))
         if (updated != null) {
             _workingMemory = updated
             onAuxDataUpdated?.invoke(updated)
-            Log.d("MemoryLayersStrategy", "Working memory updated (${updated.length} chars)")
+            Log.d(TAG, "L2 updated: ${updated.length} chars")
+        } else {
+            Log.w(TAG, "L2 extraction returned null (LLM call failed?)")
         }
     }
 
@@ -107,6 +136,7 @@ class MemoryLayersStrategy(
 
     // Reset clears Layer 1 inner strategy and working memory; long-term survives
     override fun reset() {
+        Log.d(TAG, "reset: clearing L1 + L2 (L3 survives)")
         innerStrategy.reset()
         _workingMemory = null
         onAuxDataUpdated?.invoke(null)
@@ -114,6 +144,7 @@ class MemoryLayersStrategy(
 
     // Called externally to extract long-term facts
     suspend fun extractLongTermFacts(history: List<Message>): List<LongTermMemoryEntry>? {
+        Log.d(TAG, "L3 extracting from ${history.size} msgs")
         return try {
             val prompt = buildLongTermPrompt(history)
             val request = LlmRequest(
@@ -123,9 +154,11 @@ class MemoryLayersStrategy(
                 temperature = 0.2
             )
             val response = llmService.chat(request).content ?: return null
-            parseLongTermFacts(response)
+            val facts = parseLongTermFacts(response)
+            Log.d(TAG, "L3 extracted ${facts.size} facts: ${facts.map { it.keyName }}")
+            facts
         } catch (e: Exception) {
-            Log.e("MemoryLayersStrategy", "Long-term extraction failed: ${e.localizedMessage}")
+            Log.e(TAG, "L3 extraction failed: ${e.localizedMessage}")
             null
         }
     }
@@ -140,7 +173,7 @@ class MemoryLayersStrategy(
             )
             llmService.chat(request).content
         } catch (e: Exception) {
-            Log.e("MemoryLayersStrategy", "Working memory extraction failed: ${e.localizedMessage}")
+            Log.e(TAG, "L2 extraction failed: ${e.localizedMessage}")
             null
         }
     }
@@ -172,6 +205,9 @@ class MemoryLayersStrategy(
     }
 
     companion object {
+        /** Single Logcat tag for all 3-layer memory events. Filter: tag:MemoryLayers */
+        const val TAG = "MemoryLayers"
+
         /** Minimum combined word count of last user + assistant messages to trigger extraction. */
         const val MIN_TURN_WORDS = 12
     }
@@ -195,7 +231,7 @@ class MemoryLayersStrategy(
                     LongTermMemoryEntry(category = cat, keyName = key, value = value, createdAt = now, updatedAt = now)
                 }
         } catch (e: Exception) {
-            Log.e("MemoryLayersStrategy", "Failed to parse long-term facts: ${e.localizedMessage}")
+            Log.e(TAG, "L3 parse failed: ${e.localizedMessage}")
             emptyList()
         }
     }
