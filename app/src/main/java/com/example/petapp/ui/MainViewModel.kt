@@ -687,7 +687,14 @@ class MainViewModel @Inject constructor(
     private suspend fun orchestratorHistory(): List<Message> {
         val snapshot = agent.historySnapshot().toMutableList()
         agent.strategy.prepareContext(snapshot)
-        return agent.strategy.buildMessages(snapshot)
+        val result = agent.strategy.buildMessages(snapshot)
+        android.util.Log.d("OrchestratorCtx",
+            "strategy=${agent.strategy.type} | " +
+            "raw=${agent.historySnapshot().size} msgs → trimmed=${snapshot.size} | " +
+            "sent to swarm=${result.size} msgs | " +
+            "prefixes=${result.takeWhile { it.role == "system" }.map { it.content?.take(40)?.replace("\n"," ") }}"
+        )
+        return result
     }
 
     private fun updateAgentConfig() {
