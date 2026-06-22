@@ -470,7 +470,7 @@ class MainViewModel @Inject constructor(
                 agent.onToolCall = { status -> _uiState.value = UiState.Loading(toolStatus = status) }
                 _uiState.value = UiState.Loading()
                 setTaskState(TaskState.Analyzing(userInput))
-                val compressedHistory = agent.strategy.buildMessages(agent.historySnapshot())
+                val compressedHistory = orchestratorHistory()
                 when (val result = tasks.orchestrator.detectAndPlan(
                     userInput               = userInput,
                     compressedHistory       = compressedHistory,
@@ -528,7 +528,7 @@ class MainViewModel @Inject constructor(
                     _activeBranchId.value
                 )
 
-                val compressedHistory = agent.strategy.buildMessages(agent.historySnapshot())
+                val compressedHistory = orchestratorHistory()
                 when (val result = tasks.orchestrator.executeAndValidate(
                     userInput               = state.userInput,
                     plan                    = state.plan,
@@ -546,6 +546,12 @@ class MainViewModel @Inject constructor(
                         setTaskState(TaskState.Done(result.finalAnswer))
                         // Done persists until user dismisses via dismissTaskState()
                         _uiState.value = UiState.Idle
+                        // Trigger memory update off the critical path — same pattern as runDirectAnswer.
+                        // Without this, working memory and sticky facts are never updated for
+                        // complex orchestrated tasks (only direct answers triggered afterTurn before).
+                        val snapshot = agent.historySnapshot().toMutableList()
+                        val currentStrategy = agent.strategy
+                        viewModelScope.launch { currentStrategy.afterTurn(snapshot) }
                     }
                     is TaskOrchestratorUseCase.OrchestratorResult.ValidationFailed -> {
                         repository.clearTaskPlan()
@@ -592,7 +598,7 @@ class MainViewModel @Inject constructor(
                 _uiState.value = UiState.Loading()
                 val replanReason = reason.ifBlank { "Валидация не пройдена: ${s.reason}" }
                 setTaskState(TaskState.Replanning(s.userInput, s.plan, replanReason))
-                val compressedHistory = agent.strategy.buildMessages(agent.historySnapshot())
+                val compressedHistory = orchestratorHistory()
                 when (val result = tasks.orchestrator.replan(
                     userInput               = s.userInput,
                     previousPlan            = s.plan,
@@ -634,7 +640,7 @@ class MainViewModel @Inject constructor(
             agentMutex.withLock {
                 _uiState.value = UiState.Loading()
                 setTaskState(TaskState.Replanning(state.userInput, state.plan, reason))
-                val compressedHistory = agent.strategy.buildMessages(agent.historySnapshot())
+                val compressedHistory = orchestratorHistory()
                 when (val result = tasks.orchestrator.replan(
                     userInput               = state.userInput,
                     previousPlan            = state.plan,
@@ -665,6 +671,23 @@ class MainViewModel @Inject constructor(
         replanCount = 0
         _taskState.value = TaskState.Idle  // direct set: dismiss is always allowed
         viewModelScope.launch { repository.clearTaskPlan() }
+    }
+
+    /**
+     * Builds a context-compressed history snapshot for orchestrator swarm agents.
+     *
+     * Equivalent to what [SimpleAgent.run] does internally before each LLM call, but operating
+     * on a copy of the history so the live [agent] history is not mutated. This ensures that
+     * the window trimming and any strategy-level compression (summary generation, etc.) are
+     * applied to the history sent to PLANNER/CRITIC/EXECUTOR/VALIDATOR/JUDGE — just as they
+     * would be in the direct-answer path.
+     *
+     * Must be called inside [agentMutex].
+     */
+    private suspend fun orchestratorHistory(): List<Message> {
+        val snapshot = agent.historySnapshot().toMutableList()
+        agent.strategy.prepareContext(snapshot)
+        return agent.strategy.buildMessages(snapshot)
     }
 
     private fun updateAgentConfig() {
