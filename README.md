@@ -250,7 +250,13 @@ Message(
 ```
 UI
 ├── MainActivity           — NavHost (chat / context_settings / memory_layers / profiles)
-├── ChatScreen             — чат, BranchBar, ContextHeader, TaskStateCard
+├── ChatScreen             — оркестратор: стейт + диалоги + вызовы компонентов
+│     ├── ChatTopAppBar      — заголовок, кнопки API / настройки / сброс / ветка
+│     ├── ChatMessageList    — LazyColumn + индикатор загрузки, владеет listState
+│     ├── ChatInputRow       — поле ввода + кнопка «→», владеет prompt-стейтом
+│     ├── ErrorBanner        — красная полоска при UiState.Error
+│     ├── ResetConfirmationDialog / BranchCreationDialog — диалоги
+│     └── BranchBar / ChatTurnItem — чипы веток и пузыри сообщений
 └── ContextSettingsScreen  — выбор стратегии, параметры N, просмотр aux data
 
 MainViewModel
@@ -288,6 +294,50 @@ Room DB (version 6)
 ├── user_profiles        — именованные профили с инструкциями для ассистента
 └── task_plan            — ожидающий план (singleton, TaskStateMachine persistence)
 ```
+
+---
+
+## UI-компоненты (ChatScreen)
+
+`ChatScreen.kt` был декомпозирован с 725 до ~530 строк: два больших блока вынесены в отдельные файлы в `ui/components/`, шесть встроенных блоков превращены в приватные composable-функции.
+
+### Файлы в ui/components/
+
+| Файл | Что содержит | Строк |
+|---|---|---|
+| `TaskStateCard.kt` | Карточка Task Orchestrator (состояния, кнопки, expandable Critic) | 274 |
+| `ApiSettingsSheet.kt` | Контент bottom sheet: выбор модели, Thinking Mode, Reasoning Effort, Max Tokens, Temperature | 184 |
+| `ContextHeader.kt` | Панель токен-статистики, прогресс-бар контекста, метка стратегии + preview aux data | 127 |
+
+Все компоненты следуют паттерну `TaskStateCard.kt`: **без ссылки на ViewModel**, только параметры + callback-лямбды.
+
+### Приватные composable-ы в ChatScreen.kt
+
+| Composable | Владеет стейтом | Назначение |
+|---|---|---|
+| `ChatTopAppBar` | — | TopAppBar: заголовок с моделью/стратегией, кнопки «⎇ Ветка» / API / ⚙ / Сброс |
+| `ChatMessageList` | `listState`, `LaunchedEffect` | LazyColumn сообщений + индикатор загрузки с tool-статусом |
+| `ChatInputRow` | `prompt: String` | OutlinedTextField + кнопка «→», disabled пока задача в оркестраторе |
+| `ErrorBanner` | — | Красная полоска при `UiState.Error`: сообщение, флаг переполнения, «OK» |
+| `ResetConfirmationDialog` | — | AlertDialog «Начать новую сессию?» |
+| `BranchCreationDialog` | `newBranchName: String` | AlertDialog с полем имени ветки |
+| `BranchBar` | — | Горизонтальный ряд FilterChip для переключения веток |
+| `ChatTurnItem` + `TokenStatsText` | — | Пузыри user/assistant + метаданные токенов |
+
+### Что осталось в ChatScreen (оркестратор)
+
+Главная функция `ChatScreen` держит только то, что охватывает несколько UI-регионов и не может быть опущено вниз:
+
+```kotlin
+// Стейт-флоу: 14 collectAsStateWithLifecycle()
+// Локальный стейт (охватывает 2+ UI-региона):
+var showApiSheet     // → TopAppBar + ModalBottomSheet
+var showBranchDialog // → TopAppBar + ChatTurnItem.onCreateBranch + BranchCreationDialog
+var showResetDialog  // → TopAppBar + ResetConfirmationDialog
+var checkpointId     // → TopAppBar action + ChatTurnItem.onCreateBranch → BranchCreationDialog
+```
+
+`prompt`, `newBranchName`, `listState` + `LaunchedEffect` — опущены вниз в owning-composable.
 
 ---
 
@@ -490,8 +540,12 @@ data/
   Models.kt             — ChatRequest, ChatResponse, Thinking — только wire-format
 
 ui/
+  screens/
+    ChatScreen.kt       — оркестратор (~160 строк): стейт + диалоги + вызовы компонентов
   components/
-    TaskStateCard.kt    ← NEW: Composable карточка машины состояний
+    TaskStateCard.kt    — Composable карточка машины состояний
+    ApiSettingsSheet.kt ← NEW: настройки API (модель, thinking mode, temperature)
+    ContextHeader.kt    ← NEW: панель статистики токенов и контекста
 
 di/
   LlmModule.kt          ← NEW: @Binds LlmService → DeepSeekLlmService
