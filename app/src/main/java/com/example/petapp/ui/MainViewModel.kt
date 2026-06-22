@@ -1001,6 +1001,31 @@ class MainViewModel @Inject constructor(
                 chat.clearWorkingMemory()
                 (agent.strategy as? MemoryLayersStrategy)?.restoreWorkingMemory(null)
                 _auxData.value = null
+
+                // Inject a profile-change marker into conversation history so the model
+                // doesn't continue using the previous profile's style from in-context examples.
+                // Without this, LLM in-context learning from history overrides the new system prompt.
+                if (agent.historySnapshot().isNotEmpty()) {
+                    val content = if (profile != null)
+                        "=== ПРОФИЛЬ ИЗМЕНЁН: «${profile.name}» ===\nСледуй инструкциям нового профиля из системного сообщения. Предыдущий стиль общения из истории диалога — не применяй."
+                    else
+                        "=== ПРОФИЛЬ ОТКЛЮЧЁН ===\nИспользуй стиль общения по умолчанию. Предыдущий стиль из истории диалога — не применяй."
+                    val marker = Message(role = "system", content = content)
+                    agent.appendMessages(listOf(marker))
+                    chat.saveTurn(
+                        listOf(ChatMessage(
+                            turnId           = turnIdSource.incrementAndGet(),
+                            role             = "system",
+                            messageJson      = gson.toJson(marker),
+                            displayText      = null,
+                            promptTokens     = null, completionTokens = null,
+                            totalTokens      = null, cachedTokens     = null,
+                            cost             = null, durationSec      = null,
+                            timestamp        = System.currentTimeMillis()
+                        )),
+                        _activeBranchId.value
+                    )
+                }
             }
             _activeProfile.value = profile
         }
