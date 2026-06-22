@@ -56,7 +56,8 @@ object TaskStateMachine {
             }
             is TaskState.Validation -> when (to) {
                 is TaskState.Done,
-                is TaskState.ValidationFailed -> Transition.Allowed
+                is TaskState.ValidationFailed,
+                is TaskState.Error -> Transition.Allowed
                 else -> forbidden(from, to)
             }
             is TaskState.ValidationFailed -> when (to) {

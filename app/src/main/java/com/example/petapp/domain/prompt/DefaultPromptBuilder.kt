@@ -19,10 +19,10 @@ class DefaultPromptBuilder @Inject constructor() : PromptBuilder {
     ): LlmRequest {
         val systemMessages = buildList {
             guardrailsInstruction?.let { add(Message(role = "system", content = it)) }
-            add(Message(role = "system", content = role.systemPrompt))
             userProfileInstructions?.let {
                 add(Message(role = "system", content = "=== ИНСТРУКЦИИ ПРОФИЛЯ ===\n$it"))
             }
+            add(Message(role = "system", content = role.systemPrompt))
             stateContext(taskState)?.let {
                 add(Message(role = "system", content = it))
             }
@@ -30,7 +30,7 @@ class DefaultPromptBuilder @Inject constructor() : PromptBuilder {
         return LlmRequest(
             messages        = systemMessages + compressedHistory + listOf(Message(role = "user", content = userInput)),
             model           = model,
-            maxTokens       = 1024,
+            maxTokens       = maxTokensFor(role),
             temperature     = 0.7,
             tools           = null,
             toolChoice      = null,
@@ -39,13 +39,23 @@ class DefaultPromptBuilder @Inject constructor() : PromptBuilder {
         )
     }
 
+    private fun maxTokensFor(role: AgentRole): Int = when (role) {
+        AgentRole.EXECUTOR  -> 4096  // may need to write long code or detailed content
+        AgentRole.JUDGE     -> 2048  // final synthesis shown to the user
+        AgentRole.PLANNER   -> 1024
+        AgentRole.CRITIC    -> 512
+        AgentRole.VALIDATOR -> 256   // only PASS/FAIL + one sentence
+    }
+
     private fun stateContext(state: TaskState): String? = when (state) {
         is TaskState.Planning   ->
             "Составь подробный пронумерованный план для выполнения задачи пользователя. Выводи только план."
         is TaskState.Execution  ->
             "=== УТВЕРЖДЁННЫЙ ПЛАН ===\n${state.plan}\n\nВыполни каждый шаг плана последовательно. Выводи только результат."
         is TaskState.Validation ->
-            "=== ПЛАН ===\n${state.plan}\n\n=== РЕЗУЛЬТАТ ВЫПОЛНЕНИЯ ===\n${state.executionResult}\n\nПроверь соответствие результата поставленной задаче."
+            // Provides plan + execution result as data context for both VALIDATOR and JUDGE.
+            // Each agent's role prompt contains the specific instruction (check vs. synthesise).
+            "=== ПЛАН ===\n${state.plan}\n\n=== РЕЗУЛЬТАТ ВЫПОЛНЕНИЯ ===\n${state.executionResult}"
         is TaskState.Replanning ->
             "=== ПРЕДЫДУЩИЙ ПЛАН ОТКЛОНЁН ===\nПричина: ${state.reason.ifBlank { "пользователь отклонил план" }}\n\nСоставь улучшенный план. Выводи только план."
         else                    -> null

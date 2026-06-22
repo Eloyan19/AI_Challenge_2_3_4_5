@@ -78,6 +78,7 @@ fun ChatScreen(navController: NavController, viewModel: MainViewModel) {
     val maxTokensText    by viewModel.maxTokensText.collectAsStateWithLifecycle()
     val temperatureText  by viewModel.temperatureText.collectAsStateWithLifecycle()
     val taskState        by viewModel.taskState.collectAsStateWithLifecycle()
+    val activeProfile    by viewModel.activeProfile.collectAsStateWithLifecycle()
 
     var showApiSheet     by remember { mutableStateOf(false) }
     var showBranchDialog by remember { mutableStateOf(false) }
@@ -111,6 +112,7 @@ fun ChatScreen(navController: NavController, viewModel: MainViewModel) {
             ChatTopAppBar(
                 selectedModel     = selectedModel,
                 strategyType      = strategyType,
+                activeProfileName = activeProfile?.name,
                 showBranchAction  = strategyType == StrategyType.BRANCHING,
                 onOpenApiSheet    = { showApiSheet = true },
                 onOpenSettings    = { navController.navigate("context_settings") },
@@ -262,6 +264,7 @@ private fun BranchCreationDialog(
 private fun ChatTopAppBar(
     selectedModel: String,
     strategyType: StrategyType,
+    activeProfileName: String?,
     showBranchAction: Boolean,
     onOpenApiSheet: () -> Unit,
     onOpenSettings: () -> Unit,
@@ -275,6 +278,7 @@ private fun ChatTopAppBar(
                 val subtitle = buildList {
                     add(selectedModel)
                     if (strategyType != StrategyType.NONE) add(strategyType.displayName)
+                    if (activeProfileName != null) add("👤 $activeProfileName")
                 }.joinToString(" · ")
                 Text(
                     text  = subtitle,

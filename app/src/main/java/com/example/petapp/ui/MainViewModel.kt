@@ -492,7 +492,11 @@ class MainViewModel @Inject constructor(
                         setTaskState(TaskState.Idle)
                         _uiState.value = UiState.Error(result.error)
                     }
-                    else -> Unit
+                    else -> {
+                        android.util.Log.e("MainViewModel", "Unexpected detectAndPlan result: $result")
+                        setTaskState(TaskState.Idle)
+                        _uiState.value = UiState.Idle
+                    }
                 }
             }
         }
@@ -570,6 +574,8 @@ class MainViewModel @Inject constructor(
                     }
                     else -> {
                         android.util.Log.e("MainViewModel", "Unexpected executeAndValidate result: $result")
+                        repository.clearTaskPlan()
+                        setTaskState(TaskState.Error("Неожиданный результат оркестрации"))
                         _uiState.value = UiState.Idle
                     }
                 }
@@ -620,6 +626,8 @@ class MainViewModel @Inject constructor(
                     }
                     else -> {
                         android.util.Log.e("MainViewModel", "Unexpected replan result: $result")
+                        repository.clearTaskPlan()
+                        setTaskState(TaskState.Error("Неожиданный результат перепланирования"))
                         _uiState.value = UiState.Idle
                     }
                 }
@@ -660,7 +668,12 @@ class MainViewModel @Inject constructor(
                         setTaskState(TaskState.Error(result.error))
                         _uiState.value = UiState.Idle
                     }
-                    else -> Unit
+                    else -> {
+                        android.util.Log.e("MainViewModel", "Unexpected replan result: $result")
+                        repository.clearTaskPlan()
+                        setTaskState(TaskState.Error("Неожиданный результат перепланирования"))
+                        _uiState.value = UiState.Idle
+                    }
                 }
             }
         }
