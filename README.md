@@ -429,6 +429,35 @@ strategy.buildMessages → [system: "=== ДОЛГОВРЕМЕННАЯ ПАМЯТ
 
 **Поведение при смене стратегии:** при переключении с любой стратегии на другую агент сбрасывается и перезагружает историю из DB по правилам новой стратегии — контекст всегда консистентен.
 
+**Как слои доходят до агентов роя (оркестратор):** при каждом вызове PLANNER/CRITIC/EXECUTOR/VALIDATOR/JUDGE `MainViewModel` строит `compressedHistory` через `orchestratorHistory()`:
+
+```
+snapshot = agent.historySnapshot().toMutableList()
+strategy.prepareContext(snapshot)          // обрезает до shortTermWindow
+compressedHistory = strategy.buildMessages(snapshot)
+// → [system: LTM] + [system: WM] + trimmed_history
+```
+
+Эта история передаётся в `DefaultPromptBuilder`, который собирает финальный запрос:
+
+```
+[system: guardrails]
+[system: роль агента]                     ← AgentRole.systemPrompt
+[system: профиль пользователя]            ← activeProfile.instructions
+[system: контекст задачи/состояния]       ← stateContext(TaskState)
+[system: LTM]  ← из compressedHistory
+[system: WM]   ← из compressedHistory
+[история N сообщений]
+[user: запрос]
+```
+
+**Исправленные баги оркестратора:**
+
+| Баг | Симптом | Фикс |
+|---|---|---|
+| `prepareContext` не вызывался в оркестраторном пути | Агенты роя получали полную необрезанную историю вне зависимости от настройки N | `orchestratorHistory()` вызывает `prepareContext` на копии snapshot перед `buildMessages` |
+| `afterTurn` не вызывался после завершения задачи | Рабочая память и sticky facts не обновлялись после сложных оркестрированных задач | `afterTurn` добавлен в ветку `ExecutionDone` в `confirmPlan()` — off critical path через `viewModelScope.launch` |
+
 ### Branching (Ветвление)
 Позволяет создавать независимые ветки диалога от любой точки истории и переключаться между ними.
 
@@ -643,6 +672,51 @@ LlmProviderConfig(
 - **Стратегии** — только чистая логика: парсинг, фильтрация, сборка сообщений. Внешние вызовы мокируются.
 - **Swarm-роли** матчатся через `eq(listOf(AgentRole.X))` — тест явно проверяет какой именно набор агентов вызывается на каждом шаге оркестратора.
 - **VALIDATOR** покрыт тремя форматами FAIL-ответа: `"FAIL\nпричина"`, `"FAIL причина"`, `"FAIL"` — потому что модель на практике возвращает любой из них.
+
+---
+
+## Отладка памяти и оркестрации
+
+### Logcat — теги
+
+| Тег | Что показывает | Когда появляется |
+|---|---|---|
+| `OrchestratorCtx` | стратегия, размер истории до/после trim, кол-во сообщений к агентам роя, system-префиксы (LTM, WM) | каждый вызов `detectAndPlan` / `executeAndValidate` / `replan` |
+| `MemoryLayersStrategy` | обновление / пропуск рабочей памяти и причина | после каждого хода при Memory Layers |
+| `SimpleAgent` | размер истории и тип стратегии перед `run()` | прямые ответы |
+
+Пример вывода `OrchestratorCtx` при исправно работающей системе:
+
+```
+D/OrchestratorCtx: strategy=MEMORY_LAYERS | raw=24 msgs → trimmed=8 | sent to swarm=10 msgs |
+    prefixes=[=== ДОЛГОВРЕМЕННАЯ ПАМЯТЬ (профиль и знания..., === РАБОЧАЯ ПАМЯТЬ (текущая сессия) ===]
+```
+
+Что проверять:
+- `raw → trimmed` — сработал ли `prepareContext` (должны быть разные числа при длинной истории)
+- `prefixes` — LTM и WM system-сообщения доходят до агентов роя
+- `MemoryLayersStrategy: Working memory updated` — рабочая память обновилась после завершения задачи
+
+### Database Inspector
+
+**View → App Inspection → Database Inspector** (только с подключённым устройством/эмулятором).
+
+| Таблица | Содержит | Что проверять |
+|---|---|---|
+| `working_memory` | текущая рабочая память (Layer 2) | обновляется после каждого значимого хода и после завершения оркестрированной задачи |
+| `long_term_memory` | LTM-записи по категориям | накапливается между сессиями |
+| `sticky_facts` | факты при StickyFacts стратегии | обновляется после каждого хода |
+| `conversation_summary` | summary при Summary стратегии | обновляется когда история превышает N |
+
+### UI — ContextHeader
+
+Панель под чатом показывает `auxData` — первые 2 строки рабочей памяти (или summary / facts). Если после сложной задачи текст изменился — `afterTurn` сработал корректно.
+
+### OkHttp BODY logging (debug-сборка)
+
+В debug-сборке (`./gradlew installDebug`) в Logcat тег `okhttp.OkHttpClient` выводит полный JSON каждого запроса к DeepSeek — массив `messages` со всеми role/content. Это самый полный способ проверить точный порядок системных сообщений (guardrails → роль → профиль → LTM → WM → история → user) для каждого агента роя.
+
+В release-сборке интерцептор отключён автоматически (`debugImplementation`).
 
 ---
 
