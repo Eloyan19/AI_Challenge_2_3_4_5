@@ -88,8 +88,8 @@ class TaskOrchestratorUseCase @Inject constructor(
         val validatorOutput = validationResults[AgentRole.VALIDATOR]?.getOrNull()
             ?: return OrchestratorResult.Failed("Не удалось провести валидацию")
 
-        if (!validatorOutput.content.startsWith("PASS", ignoreCase = true)) {
-            val firstLine = validatorOutput.content.lines().firstOrNull().orEmpty()
+        if (!validatorOutput.content.trim().startsWith("PASS", ignoreCase = true)) {
+            val firstLine = validatorOutput.content.trim().lines().firstOrNull().orEmpty()
             val rest = validatorOutput.content.removePrefix(firstLine).trimStart('\n', '\r')
             val reason = rest.ifBlank {
                 firstLine.substringAfter(" ", missingDelimiterValue = "").trim()
