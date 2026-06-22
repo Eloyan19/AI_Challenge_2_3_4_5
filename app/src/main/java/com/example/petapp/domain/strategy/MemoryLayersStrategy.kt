@@ -12,13 +12,19 @@ import com.google.gson.reflect.TypeToken
 
 /**
  * 3-layer memory strategy:
- * - Layer 1 (Short-term): last [shortTermWindow] messages in the live window (in-memory)
+ * - Layer 1 (Short-term): delegated to [innerStrategy] — can be Noop, SlidingWindow, or StickyFacts
  * - Layer 2 (Working): auto-extracted task context after each turn (persisted via [onAuxDataUpdated])
  * - Layer 3 (Long-term): persistent facts across sessions (injected from DB, read-only here)
+ *
+ * @param innerStrategy Controls Layer 1 trimming and message wrapping. Defaults to SlidingWindow(8)
+ *   to preserve the original behaviour when constructed without an explicit inner strategy.
+ * @param shortTermWindow Controls how many messages are passed to the Layer 2 working-memory
+ *   extractor in [afterTurn]. Independent of Layer 1 — the inner strategy handles trimming.
  */
 class MemoryLayersStrategy(
     private val llmService: LlmService,
     private val providerConfig: LlmProviderConfig,
+    val innerStrategy: ContextStrategy = SlidingWindowStrategy(8),
     var shortTermWindow: Int = 8,
     var minTurnWords: Int = MIN_TURN_WORDS,
     private val gson: Gson = Gson()
@@ -40,25 +46,29 @@ class MemoryLayersStrategy(
     override val auxData: String? get() = _workingMemory
     override var onAuxDataUpdated: ((String?) -> Unit)? = null
 
-    // Layer 1: Short-term — trim to window
+    // Layer 1: delegate to inner strategy
     override suspend fun prepareContext(history: MutableList<Message>) {
-        while (history.size > shortTermWindow) history.removeAt(0)
+        innerStrategy.prepareContext(history)
     }
 
-    // Build: [long-term system] + [working system] + [short-term messages]
+    // Build: [long-term system] + [working system] + inner strategy result
+    // When inner = StickyFacts: prefix + [facts system msg] + history
+    // When inner = Sliding/Noop: prefix + history
     override fun buildMessages(history: List<Message>): List<Message> {
-        val prefix = mutableListOf<Message>()
-        _longTermMemory?.let {
-            prefix.add(Message(role = "system", content = "=== ДОЛГОВРЕМЕННАЯ ПАМЯТЬ (профиль и знания пользователя) ===\n$it"))
+        val prefix = buildList {
+            _longTermMemory?.let {
+                add(Message(role = "system", content = "=== ДОЛГОВРЕМЕННАЯ ПАМЯТЬ (профиль и знания пользователя) ===\n$it"))
+            }
+            _workingMemory?.let {
+                add(Message(role = "system", content = "=== РАБОЧАЯ ПАМЯТЬ (текущая сессия) ===\n$it"))
+            }
         }
-        _workingMemory?.let {
-            prefix.add(Message(role = "system", content = "=== РАБОЧАЯ ПАМЯТЬ (текущая сессия) ===\n$it"))
-        }
-        return prefix + history
+        return prefix + innerStrategy.buildMessages(history)
     }
 
-    // After each turn: update working memory via LLM
+    // After each turn: Layer 1 post-processing first, then Layer 2 working memory extraction
     override suspend fun afterTurn(history: List<Message>) {
+        innerStrategy.afterTurn(history)
         if (!isTurnSignificant(history)) {
             Log.d("MemoryLayersStrategy", "afterTurn skipped: turn not significant")
             return
@@ -95,8 +105,9 @@ class MemoryLayersStrategy(
         return (userWords + assistantWords) >= minTurnWords
     }
 
-    // Reset clears working memory only (long-term survives)
+    // Reset clears Layer 1 inner strategy and working memory; long-term survives
     override fun reset() {
+        innerStrategy.reset()
         _workingMemory = null
         onAuxDataUpdated?.invoke(null)
     }

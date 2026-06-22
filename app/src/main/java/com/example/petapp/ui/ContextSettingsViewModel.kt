@@ -2,6 +2,7 @@ package com.example.petapp.ui
 
 import android.content.SharedPreferences
 import androidx.lifecycle.ViewModel
+import com.example.petapp.domain.model.ShortTermType
 import com.example.petapp.domain.model.StrategyType
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -41,8 +42,22 @@ class ContextSettingsViewModel @Inject constructor(
     /** The window-size value currently shown in the text field (not yet applied to the agent). */
     val keepLastN: StateFlow<Int> = _keepLastN.asStateFlow()
 
+    private val _shortTermType = MutableStateFlow(
+        runCatching {
+            ShortTermType.valueOf(
+                prefs.getString(MainViewModel.KEY_SHORT_TERM_TYPE, MainViewModel.DEFAULT_SHORT_TERM_TYPE.name)!!
+            )
+        }.getOrDefault(MainViewModel.DEFAULT_SHORT_TERM_TYPE)
+    )
+
+    /** The Layer 1 strategy type for MEMORY_LAYERS (not yet applied to the agent). */
+    val shortTermType: StateFlow<ShortTermType> = _shortTermType.asStateFlow()
+
     /** Updates the highlighted strategy option without applying it. */
     fun selectStrategy(type: StrategyType) { _selectedStrategy.value = type }
+
+    /** Updates the Layer 1 sub-strategy for MEMORY_LAYERS without applying it. */
+    fun selectShortTermType(type: ShortTermType) { _shortTermType.value = type }
 
     /**
      * Updates the window-size value, clamping it to the valid range [2, 100].

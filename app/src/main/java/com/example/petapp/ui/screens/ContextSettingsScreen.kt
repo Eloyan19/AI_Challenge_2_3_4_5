@@ -41,6 +41,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
 import com.example.petapp.di.LocalViewModelFactory
+import com.example.petapp.domain.model.ShortTermType
 import com.example.petapp.domain.model.StrategyType
 import com.example.petapp.ui.ContextSettingsViewModel
 import com.example.petapp.ui.MainViewModel
@@ -57,6 +58,7 @@ fun ContextSettingsScreen(
 
     val selectedStrategy by settingsViewModel.selectedStrategy.collectAsStateWithLifecycle()
     val keepLastN        by settingsViewModel.keepLastN.collectAsStateWithLifecycle()
+    val shortTermType    by settingsViewModel.shortTermType.collectAsStateWithLifecycle()
 
     // Local text mirror so the field shows partial input while typing
     var keepLastNText by remember { mutableStateOf(keepLastN.toString()) }
@@ -137,13 +139,43 @@ fun ContextSettingsScreen(
 
             Spacer(Modifier.height(20.dp))
 
-            if (selectedStrategy in listOf(
-                    StrategyType.SLIDING_WINDOW,
-                    StrategyType.SUMMARY,
-                    StrategyType.STICKY_FACTS,
-                    StrategyType.MEMORY_LAYERS
+            // Sub-picker: Layer 1 strategy — only visible when MEMORY_LAYERS is selected
+            if (selectedStrategy == StrategyType.MEMORY_LAYERS) {
+                HorizontalDivider()
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    text  = "Краткосрочная память (Слой 1)",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold
                 )
-            ) {
+                Spacer(Modifier.height(4.dp))
+                ShortTermTypeOption(
+                    type        = ShortTermType.NONE,
+                    selected    = shortTermType,
+                    onSelect    = { settingsViewModel.selectShortTermType(it) },
+                    description = "Вся история без ограничений."
+                )
+                ShortTermTypeOption(
+                    type        = ShortTermType.SLIDING_WINDOW,
+                    selected    = shortTermType,
+                    onSelect    = { settingsViewModel.selectShortTermType(it) },
+                    description = "Последние N сообщений — старые отбрасываются."
+                )
+                ShortTermTypeOption(
+                    type        = ShortTermType.STICKY_FACTS,
+                    selected    = shortTermType,
+                    onSelect    = { settingsViewModel.selectShortTermType(it) },
+                    description = "Факты из диалога + последние N сообщений."
+                )
+            }
+
+            val showKeepLastN = selectedStrategy in listOf(
+                StrategyType.SLIDING_WINDOW,
+                StrategyType.SUMMARY,
+                StrategyType.STICKY_FACTS
+            ) || (selectedStrategy == StrategyType.MEMORY_LAYERS && shortTermType != ShortTermType.NONE)
+
+            if (showKeepLastN) {
                 HorizontalDivider()
                 Spacer(Modifier.height(16.dp))
                 Text(
@@ -157,7 +189,11 @@ fun ContextSettingsScreen(
                         StrategyType.SLIDING_WINDOW -> "Хранить последних N сообщений — остальные отброшены."
                         StrategyType.SUMMARY        -> "Хранить последних N сообщений как есть, старые → summary."
                         StrategyType.STICKY_FACTS   -> "Отправлять последних N сообщений + блок фактов."
-                        StrategyType.MEMORY_LAYERS  -> "Краткосрочное окно: последние N сообщений отправляются в контексте."
+                        StrategyType.MEMORY_LAYERS  -> when (shortTermType) {
+                            ShortTermType.SLIDING_WINDOW -> "Краткосрочный слой: последние N сообщений."
+                            ShortTermType.STICKY_FACTS   -> "Краткосрочный слой: факты + последние N сообщений."
+                            ShortTermType.NONE           -> ""
+                        }
                         else -> ""
                     },
                     style = MaterialTheme.typography.bodySmall,
@@ -263,8 +299,14 @@ fun ContextSettingsScreen(
                                     "После следующего ответа будут извлечены ключевые факты диалога. История в чате не изменится."
                                 StrategyType.NONE ->
                                     "Контекст сжиматься не будет. ИИ будет видеть всю историю на каждый запрос."
-                                StrategyType.MEMORY_LAYERS ->
-                                    "Активируются 3 слоя памяти: краткосрочная (последние $keepLastN сообщений), рабочая (текущая задача) и долговременная (профиль). Рабочая память обновляется после каждого ответа."
+                                StrategyType.MEMORY_LAYERS -> {
+                                    val layer1Desc = when (shortTermType) {
+                                        ShortTermType.NONE           -> "краткосрочная (вся история)"
+                                        ShortTermType.SLIDING_WINDOW -> "краткосрочная (последние $keepLastN сообщений)"
+                                        ShortTermType.STICKY_FACTS   -> "краткосрочная (факты + последние $keepLastN сообщений)"
+                                    }
+                                    "Активируются 3 слоя памяти: $layer1Desc, рабочая (текущая задача) и долговременная (профиль). Рабочая память обновляется после каждого ответа."
+                                }
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSecondaryContainer
@@ -276,7 +318,7 @@ fun ContextSettingsScreen(
 
             Button(
                 onClick = {
-                    chatViewModel.applyStrategyConfig(selectedStrategy, keepLastN)
+                    chatViewModel.applyStrategyConfig(selectedStrategy, keepLastN, shortTermType)
                     navController.popBackStack()
                 },
                 modifier = Modifier.fillMaxWidth()
@@ -298,6 +340,34 @@ private fun StrategyOption(
         modifier          = Modifier
             .fillMaxWidth()
             .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.Top
+    ) {
+        RadioButton(
+            selected = type == selected,
+            onClick  = { onSelect(type) }
+        )
+        Column(modifier = Modifier.padding(start = 8.dp, top = 10.dp)) {
+            Text(type.displayName, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+            Text(
+                text  = description,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+            )
+        }
+    }
+}
+
+@Composable
+private fun ShortTermTypeOption(
+    type: ShortTermType,
+    selected: ShortTermType,
+    onSelect: (ShortTermType) -> Unit,
+    description: String
+) {
+    Row(
+        modifier          = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp),
         verticalAlignment = Alignment.Top
     ) {
         RadioButton(

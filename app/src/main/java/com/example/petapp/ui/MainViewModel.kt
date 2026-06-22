@@ -11,6 +11,7 @@ import com.example.petapp.domain.model.Message
 import com.example.petapp.domain.model.Branch
 import com.example.petapp.domain.model.ChatMessage
 import com.example.petapp.domain.model.LongTermMemoryEntry
+import com.example.petapp.domain.model.ShortTermType
 import com.example.petapp.domain.model.StrategyType
 import com.example.petapp.domain.model.UserProfile
 import com.example.petapp.domain.repository.ChatRepository
@@ -98,6 +99,12 @@ class MainViewModel @Inject constructor(
 
         /** SharedPreferences key for the active user profile id (-1 = no active profile). */
         const val KEY_ACTIVE_PROFILE = "active_profile_id"
+
+        /** SharedPreferences key for the Layer 1 strategy within MEMORY_LAYERS. */
+        const val KEY_SHORT_TERM_TYPE = "memory_layers_short_term_type"
+
+        /** Default Layer 1 strategy — mirrors the original hardcoded sliding-window behaviour. */
+        val DEFAULT_SHORT_TERM_TYPE = ShortTermType.SLIDING_WINDOW
 
         /** Database id of the permanent root branch that is always present. */
         const val MAIN_BRANCH_ID = 1L
@@ -249,6 +256,13 @@ class MainViewModel @Inject constructor(
     private val _keepLastN = MutableStateFlow(prefs.getInt(KEY_KEEP_LAST, DEFAULT_KEEP_LAST))
     val keepLastN: StateFlow<Int> = _keepLastN.asStateFlow()
 
+    private val _shortTermType = MutableStateFlow(
+        runCatching {
+            ShortTermType.valueOf(prefs.getString(KEY_SHORT_TERM_TYPE, DEFAULT_SHORT_TERM_TYPE.name)!!)
+        }.getOrDefault(DEFAULT_SHORT_TERM_TYPE)
+    )
+    val shortTermType: StateFlow<ShortTermType> = _shortTermType.asStateFlow()
+
     /** Summary text (for SUMMARY strategy) or facts list (for STICKY_FACTS) or working memory (for MEMORY_LAYERS); null otherwise. */
     private val _auxData = MutableStateFlow<String?>(null)
     val auxData: StateFlow<String?> = _auxData.asStateFlow()
@@ -344,13 +358,15 @@ class MainViewModel @Inject constructor(
      * @param type The new strategy to activate.
      * @param keepLastN Window size for strategies that trim the history.
      */
-    fun applyStrategyConfig(type: StrategyType, keepLastN: Int) {
+    fun applyStrategyConfig(type: StrategyType, keepLastN: Int, shortTermType: ShortTermType = _shortTermType.value) {
         prefs.edit()
             .putString(KEY_STRATEGY, type.name)
             .putInt(KEY_KEEP_LAST, keepLastN)
+            .putString(KEY_SHORT_TERM_TYPE, shortTermType.name)
             .apply()
         _currentStrategyType.value = type
         _keepLastN.value           = keepLastN
+        _shortTermType.value       = shortTermType
 
         viewModelScope.launch {
             agentMutex.withLock {
@@ -417,19 +433,34 @@ class MainViewModel @Inject constructor(
                 }
             }
             StrategyType.BRANCHING      -> BranchingStrategy()
-            StrategyType.MEMORY_LAYERS  -> MemoryLayersStrategy(llmService, providerConfig, n, gson = gson).also { s ->
-                val ltm = chat.getLongTermMemory()
-                _longTermMemories.value = ltm
-                s.setLongTermMemory(formatLtmForPrompt(ltm))
-                if (restoreAux) {
-                    val saved = chat.getWorkingMemory()
-                    s.restoreWorkingMemory(saved)
-                    _auxData.value = saved
+            StrategyType.MEMORY_LAYERS  -> {
+                val inner: ContextStrategy = when (_shortTermType.value) {
+                    ShortTermType.NONE           -> NoopStrategy()
+                    ShortTermType.SLIDING_WINDOW -> SlidingWindowStrategy(n)
+                    ShortTermType.STICKY_FACTS   -> StickyFactsStrategy(llmService, providerConfig, n).also { sf ->
+                        if (restoreAux) { sf.facts = chat.getFacts() }
+                        sf.onAuxDataUpdated = { text ->
+                            // Inner-strategy facts persist to saveFacts(); _auxData is reserved for Layer 2
+                            viewModelScope.launch {
+                                if (text != null) chat.saveFacts(text) else chat.clearFacts()
+                            }
+                        }
+                    }
                 }
-                s.onAuxDataUpdated = { text ->
-                    _auxData.value = text
-                    viewModelScope.launch {
-                        if (text != null) chat.saveWorkingMemory(text) else chat.clearWorkingMemory()
+                MemoryLayersStrategy(llmService, providerConfig, inner, n, gson = gson).also { s ->
+                    val ltm = chat.getLongTermMemory()
+                    _longTermMemories.value = ltm
+                    s.setLongTermMemory(formatLtmForPrompt(ltm))
+                    if (restoreAux) {
+                        val saved = chat.getWorkingMemory()
+                        s.restoreWorkingMemory(saved)
+                        _auxData.value = saved
+                    }
+                    s.onAuxDataUpdated = { text ->
+                        _auxData.value = text
+                        viewModelScope.launch {
+                            if (text != null) chat.saveWorkingMemory(text) else chat.clearWorkingMemory()
+                        }
                     }
                 }
             }
