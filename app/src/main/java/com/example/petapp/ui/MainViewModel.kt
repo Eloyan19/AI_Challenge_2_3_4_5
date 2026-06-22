@@ -542,28 +542,14 @@ class MainViewModel @Inject constructor(
                 _uiState.value = UiState.Loading()
                 setTaskState(TaskState.Execution(state.userInput, state.plan))
 
-                // Inject the approved plan into agent.history as a system message so context
-                // strategies (Summary, StickyFacts, MemoryLayers) can see and compress it.
+                // Prepend plan context to the swarm's snapshot only — do NOT write to agent.history
+                // or DB. Writing to history caused the message to accumulate on every confirmPlan()
+                // retry (ValidationFailed → retry → another copy), which degraded EXECUTOR context.
                 val planContextMsg = Message(
                     role    = "system",
                     content = "=== ЗАДАЧА В РАБОТЕ ===\nЗапрос: ${state.userInput}\n\nУтверждённый план:\n${state.plan}"
                 )
-                agent.appendMessages(listOf(planContextMsg))
-                chat.saveTurn(
-                    listOf(ChatMessage(
-                        turnId           = turnIdSource.incrementAndGet(),
-                        role             = "system",
-                        messageJson      = gson.toJson(planContextMsg),
-                        displayText      = null,
-                        promptTokens     = null, completionTokens = null,
-                        totalTokens      = null, cachedTokens     = null,
-                        cost             = null, durationSec      = null,
-                        timestamp        = System.currentTimeMillis()
-                    )),
-                    _activeBranchId.value
-                )
-
-                val compressedHistory = orchestratorHistory()
+                val compressedHistory = listOf(planContextMsg) + orchestratorHistory()
                 when (val result = tasks.orchestrator.executeAndValidate(
                     userInput               = state.userInput,
                     plan                    = state.plan,
