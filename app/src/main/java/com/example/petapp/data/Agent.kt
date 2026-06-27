@@ -5,6 +5,7 @@ import com.example.petapp.domain.LlmService
 import com.example.petapp.domain.model.LlmProviderConfig
 import com.example.petapp.domain.model.LlmRequest
 import com.example.petapp.domain.model.Message
+import com.example.petapp.domain.model.Tool
 import com.example.petapp.domain.strategy.ContextStrategy
 import com.example.petapp.domain.strategy.NoopStrategy
 import retrofit2.HttpException
@@ -144,20 +145,23 @@ class SimpleAgent @Inject constructor(
      * Runs one user turn: appends [userInput] to history, trims via [strategy], then
      * enters the tool-call loop until the model produces a final text response.
      *
-     * On failure the messages added during this turn are rolled back from [history] so the
-     * conversation state remains consistent with what is shown in the UI.
+     * On failure the full history is restored from a pre-turn snapshot so the conversation
+     * state remains consistent with what is shown in the UI. A simple index-based rollback
+     * would not work when [strategy] removes messages during [ContextStrategy.prepareContext]
+     * (e.g. SlidingWindow), because history.size after trimming can be less than the original
+     * turnStartIndex, causing the rollback loop to never execute.
      */
     suspend fun run(userInput: String): AgentResult {
-        val turnStartIndex = history.size
+        val historyBefore = history.toList()
         history.add(Message(role = "user", content = userInput))
         strategy.prepareContext(history)
 
         Log.d("SimpleAgent", "run() — ${history.size} msgs, strategy=${strategy.type}")
 
         return try {
-            agentLoop(turnStartIndex)
+            agentLoop(historyBefore.size)
         } catch (e: HttpException) {
-            while (history.size > turnStartIndex) history.removeLastOrNull()
+            history.clear(); history.addAll(historyBefore)
             val body = runCatching { e.response()?.errorBody()?.string() }.getOrNull()
             val isOverflow = body != null && (
                 body.contains("context_length_exceeded", ignoreCase = true) ||
@@ -165,7 +169,7 @@ class SimpleAgent @Inject constructor(
             )
             AgentResult.Failure("Ошибка API (${e.code()}): ${e.message()}", isOverflow)
         } catch (e: Exception) {
-            while (history.size > turnStartIndex) history.removeLastOrNull()
+            history.clear(); history.addAll(historyBefore)
             AgentResult.Failure("Ошибка: ${e.localizedMessage}")
         }
     }
@@ -173,12 +177,16 @@ class SimpleAgent @Inject constructor(
     /**
      * Inner tool-call loop: sends the current history to the LLM and repeats up to
      * [MAX_TOOL_ITERATIONS] times when the model requests tool calls.
+     *
+     * Tools are fetched once before the loop to avoid redundant [ToolRegistry.allTools] calls
+     * (which include a network round-trip to the MCP server on cache miss) on every iteration.
      */
     private suspend fun agentLoop(turnStartIndex: Int): AgentResult {
         val startTime = System.currentTimeMillis()
+        val tools = if (!config.thinkingEnabled) toolRegistry.allTools() else null
 
         repeat(MAX_TOOL_ITERATIONS) {
-            val response = llmService.chat(buildLlmRequest())
+            val response = llmService.chat(buildLlmRequest(tools))
 
             if (response.finishReason == "tool_calls") {
                 val toolCalls = response.toolCalls
@@ -215,15 +223,14 @@ class SimpleAgent @Inject constructor(
         return AgentResult.Failure("Превышен лимит итераций ($MAX_TOOL_ITERATIONS)")
     }
 
-    /** Builds the [LlmRequest] from current [config], [history], and [strategy]. */
-    private suspend fun buildLlmRequest(): LlmRequest {
+    /** Builds the [LlmRequest] from current [config], [history], [strategy], and the pre-fetched [tools] list. */
+    private fun buildLlmRequest(tools: List<Tool>?): LlmRequest {
         val strategyMessages = strategy.buildMessages(history)
         val messages = buildList {
             guardrailsInstruction?.let { add(Message(role = "system", content = it)) }
             systemProfileInstructions?.let { add(Message(role = "system", content = "=== ИНСТРУКЦИИ ПРОФИЛЯ ===\n$it")) }
             addAll(strategyMessages)
         }
-        val tools = if (!config.thinkingEnabled) toolRegistry.allTools() else null
         Log.d("SimpleAgent", "buildLlmRequest: ${tools?.size ?: 0} tools available: ${tools?.map { it.function.name }}")
         return LlmRequest(
             model           = config.model,
@@ -231,7 +238,7 @@ class SimpleAgent @Inject constructor(
             maxTokens       = config.maxTokens,
             temperature     = config.temperature,
             tools           = tools,
-            toolChoice      = if (!config.thinkingEnabled) "auto" else null,
+            toolChoice      = if (tools != null) "auto" else null,
             thinkingEnabled = config.thinkingEnabled,
             reasoningEffort = config.reasoningEffort
         )
