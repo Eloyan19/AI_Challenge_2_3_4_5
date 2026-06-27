@@ -34,7 +34,8 @@ class McpClient @Inject constructor(
 
     @Volatile private var cachedTools: List<Tool> = emptyList()
     @Volatile private var toolsCachedAt: Long = 0
-    private val mcpToolNames = mutableSetOf<String>()
+    @Volatile private var mcpToolNames: Set<String> = emptySet()
+    private val requestIdCounter = java.util.concurrent.atomic.AtomicLong(0)
 
     fun ownsToolName(name: String): Boolean = name in mcpToolNames
 
@@ -47,7 +48,7 @@ class McpClient @Inject constructor(
         try {
             ensureSession()
             Log.d(TAG, "tools/list → fetching from server...")
-            val raw = postMcp(buildJsonRpc("tools/list", 2, JsonObject()))
+            val raw = postMcp(buildJsonRpc("tools/list", requestIdCounter.incrementAndGet().toInt(), JsonObject()))
             val tools = parseSseData(raw)
                 .getAsJsonObject("result")
                 ?.getAsJsonArray("tools")
@@ -55,10 +56,7 @@ class McpClient @Inject constructor(
                 ?: emptyList()
             cachedTools = tools
             toolsCachedAt = now
-            synchronized(mcpToolNames) {
-                mcpToolNames.clear()
-                mcpToolNames.addAll(tools.map { it.function.name })
-            }
+            mcpToolNames = tools.map { it.function.name }.toSet()
             Log.d(TAG, "tools/list ← ${tools.size} tools: ${mcpToolNames.toList()}")
             tools
         } catch (e: Exception) {
@@ -104,7 +102,7 @@ class McpClient @Inject constructor(
                 addProperty("version", "1.0")
             })
         }
-        val request = buildRequest(buildJsonRpc("initialize", 1, params), sessionId = null)
+        val request = buildRequest(buildJsonRpc("initialize", requestIdCounter.incrementAndGet().toInt(), params), sessionId = null)
         return httpClient.newCall(request).execute().use { response ->
             if (!response.isSuccessful) throw RuntimeException("MCP initialize failed: ${response.code}")
             response.header("mcp-session-id")
@@ -117,7 +115,7 @@ class McpClient @Inject constructor(
             addProperty("name", name)
             add("arguments", args)
         }
-        val raw = postMcp(buildJsonRpc("tools/call", 3, params))
+        val raw = postMcp(buildJsonRpc("tools/call", requestIdCounter.incrementAndGet().toInt(), params))
         return parseSseData(raw)
             .getAsJsonObject("result")
             ?.getAsJsonArray("content")
