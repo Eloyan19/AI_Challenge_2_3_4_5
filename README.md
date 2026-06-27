@@ -247,7 +247,7 @@ private fun setTaskState(newState: TaskState) {
 coroutineScope {
     roles.map { role ->
         async {
-            val request = promptBuilder.build(role, userInput, taskState, compressedHistory, ...)
+            val request = promptBuilder.build(role, userInput, taskState, compressedHistory, /* ... */)
             role to llmService.chat(request)
         }
     }.map { it.await() }.toMap()
