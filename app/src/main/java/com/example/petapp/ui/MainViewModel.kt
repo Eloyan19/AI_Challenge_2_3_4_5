@@ -537,6 +537,7 @@ class MainViewModel @Inject constructor(
     fun confirmPlan() {
         val state = _taskState.value as? TaskState.AwaitingInput ?: return
         updateAgentConfig()
+        replanCount = 0
         viewModelScope.launch {
             agentMutex.withLock {
                 _uiState.value = UiState.Loading()
@@ -580,7 +581,8 @@ class MainViewModel @Inject constructor(
                             userInput       = state.userInput,
                             plan            = state.plan,
                             executionResult = result.executionResult,
-                            reason          = result.reason
+                            reason          = result.reason,
+                            critique        = state.critique
                         ))
                         _uiState.value = UiState.Idle
                     }
@@ -603,7 +605,7 @@ class MainViewModel @Inject constructor(
     /** Retries execution with the same plan after a validation failure. */
     fun retryFromValidationFailed() {
         val s = _taskState.value as? TaskState.ValidationFailed ?: return
-        setTaskState(TaskState.AwaitingInput(s.userInput, s.plan))
+        setTaskState(TaskState.AwaitingInput(s.userInput, s.plan, s.critique))
     }
 
     /** Triggers replanning directly from a validation failure, skipping the AwaitingInput step. */
@@ -715,12 +717,11 @@ class MainViewModel @Inject constructor(
      * Must be called inside [agentMutex].
      */
     private suspend fun orchestratorHistory(): List<Message> {
-        val snapshot = agent.historySnapshot().toMutableList()
-        agent.strategy.prepareContext(snapshot)
+        val snapshot = agent.historySnapshot()
         val result = agent.strategy.buildMessages(snapshot)
         android.util.Log.d("OrchestratorCtx",
             "strategy=${agent.strategy.type} | " +
-            "raw=${agent.historySnapshot().size} msgs → trimmed=${snapshot.size} | " +
+            "snapshot=${snapshot.size} msgs → " +
             "sent to swarm=${result.size} msgs | " +
             "prefixes=${result.takeWhile { it.role == "system" }.map { it.content?.take(40)?.replace("\n"," ") }}"
         )

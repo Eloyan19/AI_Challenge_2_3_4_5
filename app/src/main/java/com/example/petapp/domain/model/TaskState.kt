@@ -25,7 +25,8 @@ sealed class TaskState {
         val userInput: String,
         val plan: String,
         val executionResult: String,
-        val reason: String
+        val reason: String,
+        val critique: String? = null
     ) : TaskState()
     data class Done(val finalResult: String) : TaskState()
     data class Replanning(val userInput: String, val previousPlan: String, val reason: String) : TaskState()
