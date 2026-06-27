@@ -223,12 +223,14 @@ class SimpleAgent @Inject constructor(
             systemProfileInstructions?.let { add(Message(role = "system", content = "=== ИНСТРУКЦИИ ПРОФИЛЯ ===\n$it")) }
             addAll(strategyMessages)
         }
+        val tools = if (!config.thinkingEnabled) toolRegistry.allTools() else null
+        Log.d("SimpleAgent", "buildLlmRequest: ${tools?.size ?: 0} tools available: ${tools?.map { it.function.name }}")
         return LlmRequest(
             model           = config.model,
             messages        = messages,
             maxTokens       = config.maxTokens,
             temperature     = config.temperature,
-            tools           = if (!config.thinkingEnabled) toolRegistry.allTools() else null,
+            tools           = tools,
             toolChoice      = if (!config.thinkingEnabled) "auto" else null,
             thinkingEnabled = config.thinkingEnabled,
             reasoningEffort = config.reasoningEffort

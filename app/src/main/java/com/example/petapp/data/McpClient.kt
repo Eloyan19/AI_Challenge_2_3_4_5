@@ -41,10 +41,12 @@ class McpClient @Inject constructor(
     suspend fun listTools(): List<Tool> = withContext(Dispatchers.IO) {
         val now = System.currentTimeMillis()
         if (cachedTools.isNotEmpty() && now - toolsCachedAt < CACHE_TTL_MS) {
+            Log.d(TAG, "tools/list — cache hit (${cachedTools.size} tools, age=${(now - toolsCachedAt) / 1000}s)")
             return@withContext cachedTools
         }
         try {
             ensureSession()
+            Log.d(TAG, "tools/list → fetching from server...")
             val raw = postMcp(buildJsonRpc("tools/list", 2, JsonObject()))
             val tools = parseSseData(raw)
                 .getAsJsonObject("result")
@@ -57,23 +59,29 @@ class McpClient @Inject constructor(
                 mcpToolNames.clear()
                 mcpToolNames.addAll(tools.map { it.function.name })
             }
-            Log.d(TAG, "Fetched ${tools.size} MCP tools: ${mcpToolNames.toList()}")
+            Log.d(TAG, "tools/list ← ${tools.size} tools: ${mcpToolNames.toList()}")
             tools
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to fetch MCP tools, degrading to cached: ${e.message}")
+            Log.w(TAG, "tools/list failed — degrading to cached (${cachedTools.size} tools): ${e.message}")
             cachedTools
         }
     }
 
     suspend fun callTool(name: String, args: JsonObject): String = withContext(Dispatchers.IO) {
         ensureSession()
+        Log.d(TAG, "tools/call → $name args=$args")
+        val start = System.currentTimeMillis()
         try {
-            doToolCall(name, args)
+            val result = doToolCall(name, args)
+            Log.d(TAG, "tools/call ← $name (${System.currentTimeMillis() - start}ms): ${result.take(200)}")
+            result
         } catch (e: SessionExpiredException) {
-            Log.w(TAG, "Session expired — reinitializing")
+            Log.w(TAG, "tools/call — session expired, reinitializing and retrying $name")
             sessionId = null
             ensureSession()
-            doToolCall(name, args)
+            val result = doToolCall(name, args)
+            Log.d(TAG, "tools/call ← $name retry ok (${System.currentTimeMillis() - start}ms): ${result.take(200)}")
+            result
         }
     }
 
@@ -81,8 +89,9 @@ class McpClient @Inject constructor(
         if (sessionId != null) return
         initMutex.withLock {
             if (sessionId != null) return
+            Log.d(TAG, "initialize → opening new MCP session")
             sessionId = initialize()
-            Log.d(TAG, "Session initialized: $sessionId")
+            Log.d(TAG, "initialize ← session=$sessionId")
         }
     }
 
