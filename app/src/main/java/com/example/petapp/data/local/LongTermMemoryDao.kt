@@ -13,17 +13,17 @@ abstract class LongTermMemoryDao {
     @Insert
     abstract suspend fun insert(e: LongTermMemoryEntity): Long
 
-    @Query("SELECT id FROM long_term_memory WHERE key_name = :keyName LIMIT 1")
-    abstract suspend fun findIdByKeyName(keyName: String): Long?
+    @Query("SELECT id FROM long_term_memory WHERE category = :category AND key_name = :keyName LIMIT 1")
+    abstract suspend fun findIdByCategoryAndKey(category: String, keyName: String): Long?
 
-    @Query("UPDATE long_term_memory SET value = :value, updated_at = :updatedAt WHERE key_name = :keyName")
-    abstract suspend fun updateByKeyName(keyName: String, value: String, updatedAt: Long)
+    @Query("UPDATE long_term_memory SET value = :value, updated_at = :updatedAt WHERE category = :category AND key_name = :keyName")
+    abstract suspend fun updateByCategoryAndKey(category: String, keyName: String, value: String, updatedAt: Long)
 
     @Transaction
     open suspend fun upsert(e: LongTermMemoryEntity): Long {
-        val existingId = findIdByKeyName(e.keyName)
+        val existingId = findIdByCategoryAndKey(e.category, e.keyName)
         return if (existingId != null) {
-            updateByKeyName(e.keyName, e.value, e.updatedAt)
+            updateByCategoryAndKey(e.category, e.keyName, e.value, e.updatedAt)
             existingId
         } else {
             insert(e)

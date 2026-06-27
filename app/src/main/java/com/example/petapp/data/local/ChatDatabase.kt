@@ -22,6 +22,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
  *   for faster branch reconstruction and turn grouping queries.
  * - v7 → v8 ([MIGRATION_7_8]): added unique index on `long_term_memory(key_name)` to enforce
  *   the upsert invariant and prevent duplicate keys from concurrent insertions.
+ * - v8 → v9 ([MIGRATION_8_9]): replaced unique index on `long_term_memory(key_name)` with a
+ *   composite unique index on `(category, key_name)` so the same key name can exist in different
+ *   categories (e.g. `profile.name` and `knowledge.name` no longer conflict).
  *
  * Obtained via [getInstance] which guarantees a single instance per process using
  * double-checked locking. Provided to DI via [com.example.petapp.di.DatabaseModule].
@@ -37,7 +40,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         UserProfileEntity::class,
         TaskPlanEntity::class,
     ],
-    version = 8,
+    version = 9,
     exportSchema = false
 )
 abstract class ChatDatabase : RoomDatabase() {
@@ -153,6 +156,16 @@ abstract class ChatDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("DROP INDEX IF EXISTS `index_long_term_memory_key_name`")
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS `index_long_term_memory_category_key_name` " +
+                    "ON `long_term_memory` (`category`, `key_name`)"
+                )
+            }
+        }
+
         /**
          * Returns the singleton [ChatDatabase] instance, creating it on first call.
          *
@@ -167,7 +180,7 @@ abstract class ChatDatabase : RoomDatabase() {
                     ChatDatabase::class.java,
                     "chat_db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
                     .addCallback(object : RoomDatabase.Callback() {
                         override fun onCreate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
                             // Seed the root branch on fresh install.
