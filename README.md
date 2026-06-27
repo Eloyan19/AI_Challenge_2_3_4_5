@@ -179,7 +179,7 @@ def get_new_emails() -> list[str]:
           Новый план → TaskState: AWAITING_INPUT
 
   Аналогичный guard в «Переработать план» из ValidationFailed.
-  replanCount сбрасывается в 0 при sendMessage() и dismissTaskState().
+  replanCount сбрасывается в 0 при sendMessage(), confirmPlan() и dismissTaskState().
 ```
 
 ### Состояния машины состояний
@@ -364,7 +364,7 @@ MainViewModel
 data/DeepSeekLlmService
 └── DeepSeekApiService (Retrofit)  ← единственное место знающее о DeepSeek
 
-Room DB (version 6)
+Room DB (version 9)
 ├── chat_messages        — история сообщений (+branch_id)
 ├── conversation_summary — LLM-пересказ (Summary strategy)
 ├── sticky_facts         — извлечённые факты (StickyFacts strategy)
@@ -512,11 +512,12 @@ strategy.buildMessages → [system: "=== ДОЛГОВРЕМЕННАЯ ПАМЯТ
 **Как слои доходят до агентов роя (оркестратор):** при каждом вызове PLANNER/CRITIC/EXECUTOR/VALIDATOR/JUDGE `MainViewModel` строит `compressedHistory` через `orchestratorHistory()`:
 
 ```
-snapshot = agent.historySnapshot().toMutableList()
-strategy.prepareContext(snapshot)          // обрезает до shortTermWindow
+snapshot = agent.historySnapshot()          // история уже обрезана предыдущими ходами
 compressedHistory = strategy.buildMessages(snapshot)
-// → [system: LTM] + [system: WM] + trimmed_history
+// → [system: LTM] + [system: WM] + история
 ```
+
+`prepareContext` здесь **не вызывается** — это было бы мутацией живого состояния стратегии (обновление `_summary`, `_facts`, `_workingMemory` и сохранение в БД как побочный эффект). История уже поддерживается в нужном размере через `prepareContext` внутри `agent.run()` после каждого прямого ответа.
 
 Эта история передаётся в `DefaultPromptBuilder`, который собирает финальный запрос:
 
@@ -535,7 +536,11 @@ compressedHistory = strategy.buildMessages(snapshot)
 
 | Баг | Симптом | Фикс |
 |---|---|---|
-| `prepareContext` не вызывался в оркестраторном пути | Агенты роя получали полную необрезанную историю вне зависимости от настройки N | `orchestratorHistory()` вызывает `prepareContext` на копии snapshot перед `buildMessages` |
+| `orchestratorHistory()` вызывал `prepareContext` на snapshot | Мутировало живое состояние стратегии (`_summary`, `_facts`); при простых запросах — двойной LLM-вызов для суммаризации | Убран вызов `prepareContext` из `orchestratorHistory()` — только `buildMessages`, чистая функция |
+| Откат истории при API-ошибке не работал с trimming-стратегиями | После ошибки сообщение пользователя оставалось в `agent.history` (индексный rollback ломался когда `prepareContext` уменьшал `history.size` ниже `turnStartIndex`) | `run()` делает снимок `historyBefore = history.toList()` до любых изменений и восстанавливает из него при исключении |
+| `toolRegistry.allTools()` вызывался на каждой итерации цикла инструментов | До 5 сетевых запросов к MCP-серверу за один ход при cache miss | `allTools()` вызывается один раз в начале `agentLoop()`, список передаётся в `buildLlmRequest(tools)` |
+| `replanCount` не сбрасывался в `confirmPlan()` | После отклонения планов и последующего подтверждения лимит перепланирований срабатывал преждевременно при ValidationFailed | Добавлен `replanCount = 0` в начало `confirmPlan()` |
+| `retryFromValidationFailed()` не передавал critique | При повторе после ValidationFailed план показывался без замечаний Critic | `AwaitingInput` получает `s.critique`; добавлено поле `critique` в `TaskState.ValidationFailed` |
 | `afterTurn` не вызывался после завершения задачи | Рабочая память и sticky facts не обновлялись после сложных оркестрированных задач | `afterTurn` добавлен в ветку `ExecutionDone` в `confirmPlan()` — off critical path через `viewModelScope.launch` |
 
 ### Branching (Ветвление)
@@ -730,6 +735,7 @@ LlmProviderConfig(
 | v6 | `task_plan` (Task State Machine persistence) |
 | v7 | Индексы на `chat_messages(branch_id)` и `chat_messages(turnId)` |
 | v8 | Уникальный индекс на `long_term_memory(key_name)` — предотвращает дубликаты при параллельных upsert |
+| v9 | Составной уникальный индекс `long_term_memory(category, key_name)` вместо `(key_name)` — факты с одинаковым именем в разных категориях (`profile.name` и `knowledge.name`) больше не конфликтуют при upsert |
 
 ---
 
@@ -761,19 +767,20 @@ LlmProviderConfig(
 
 | Тег | Что показывает | Когда появляется |
 |---|---|---|
-| `OrchestratorCtx` | стратегия, размер истории до/после trim, кол-во сообщений к агентам роя, system-префиксы (LTM, WM) | каждый вызов `detectAndPlan` / `executeAndValidate` / `replan` |
+| `OrchestratorCtx` | стратегия, размер snapshot, кол-во сообщений к агентам роя, system-префиксы (LTM, WM) | каждый вызов `detectAndPlan` / `executeAndValidate` / `replan` |
 | `MemoryLayersStrategy` | обновление / пропуск рабочей памяти и причина | после каждого хода при Memory Layers |
 | `SimpleAgent` | размер истории и тип стратегии перед `run()` | прямые ответы |
 
 Пример вывода `OrchestratorCtx` при исправно работающей системе:
 
 ```
-D/OrchestratorCtx: strategy=MEMORY_LAYERS | raw=24 msgs → trimmed=8 | sent to swarm=10 msgs |
+D/OrchestratorCtx: strategy=MEMORY_LAYERS | snapshot=8 msgs → sent to swarm=10 msgs |
     prefixes=[=== ДОЛГОВРЕМЕННАЯ ПАМЯТЬ (профиль и знания..., === РАБОЧАЯ ПАМЯТЬ (текущая сессия) ===]
 ```
 
 Что проверять:
-- `raw → trimmed` — сработал ли `prepareContext` (должны быть разные числа при длинной истории)
+- `snapshot` — сколько сообщений в текущей истории агента
+- `sent to swarm` — сколько сообщений (включая system-префиксы) получили агенты роя
 - `prefixes` — LTM и WM system-сообщения доходят до агентов роя
 - `MemoryLayersStrategy: Working memory updated` — рабочая память обновилась после завершения задачи
 
@@ -818,6 +825,6 @@ YANDEX_SEARCH_KEY=ключ_из_xml.yandex.com
 - Kotlin, Jetpack Compose, Material3
 - Retrofit 2 + OkHttp + Gson
 - ViewModel + StateFlow (MVVM + Clean Architecture)
-- Room v8 (chat_messages, summary, sticky_facts, branches, working_memory, long_term_memory, user_profiles, task_plan)
+- Room v9 (chat_messages, summary, sticky_facts, branches, working_memory, long_term_memory, user_profiles, task_plan)
 - Navigation Compose (chat ↔ context settings ↔ memory layers ↔ profiles)
 - DeepSeek API, wttr.in, Frankfurter, Yandex XML Search
