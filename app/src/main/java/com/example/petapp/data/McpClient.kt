@@ -1,0 +1,164 @@
+package com.example.petapp.data
+
+import android.util.Log
+import com.example.petapp.domain.model.Tool
+import com.example.petapp.domain.model.ToolFunction
+import com.google.gson.Gson
+import com.google.gson.JsonObject
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import javax.inject.Inject
+import javax.inject.Named
+import javax.inject.Singleton
+
+@Singleton
+class McpClient @Inject constructor(
+    @Named("base") private val httpClient: OkHttpClient,
+    private val gson: Gson
+) {
+    companion object {
+        private const val MCP_URL = "https://jorchik.com/mcp/demo"
+        private const val TAG = "McpClient"
+        private const val CACHE_TTL_MS = 5 * 60 * 1000L
+        private val JSON_MEDIA_TYPE = "application/json".toMediaType()
+    }
+
+    @Volatile private var sessionId: String? = null
+    private val initMutex = Mutex()
+
+    @Volatile private var cachedTools: List<Tool> = emptyList()
+    @Volatile private var toolsCachedAt: Long = 0
+    private val mcpToolNames = mutableSetOf<String>()
+
+    fun ownsToolName(name: String): Boolean = name in mcpToolNames
+
+    suspend fun listTools(): List<Tool> = withContext(Dispatchers.IO) {
+        val now = System.currentTimeMillis()
+        if (cachedTools.isNotEmpty() && now - toolsCachedAt < CACHE_TTL_MS) {
+            return@withContext cachedTools
+        }
+        try {
+            ensureSession()
+            val raw = postMcp(buildJsonRpc("tools/list", 2, JsonObject()))
+            val tools = parseSseData(raw)
+                .getAsJsonObject("result")
+                ?.getAsJsonArray("tools")
+                ?.mapNotNull { convertMcpTool(it.asJsonObject) }
+                ?: emptyList()
+            cachedTools = tools
+            toolsCachedAt = now
+            synchronized(mcpToolNames) {
+                mcpToolNames.clear()
+                mcpToolNames.addAll(tools.map { it.function.name })
+            }
+            Log.d(TAG, "Fetched ${tools.size} MCP tools: ${mcpToolNames.toList()}")
+            tools
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to fetch MCP tools, degrading to cached: ${e.message}")
+            cachedTools
+        }
+    }
+
+    suspend fun callTool(name: String, args: JsonObject): String = withContext(Dispatchers.IO) {
+        ensureSession()
+        try {
+            doToolCall(name, args)
+        } catch (e: SessionExpiredException) {
+            Log.w(TAG, "Session expired — reinitializing")
+            sessionId = null
+            ensureSession()
+            doToolCall(name, args)
+        }
+    }
+
+    private suspend fun ensureSession() {
+        if (sessionId != null) return
+        initMutex.withLock {
+            if (sessionId != null) return
+            sessionId = initialize()
+            Log.d(TAG, "Session initialized: $sessionId")
+        }
+    }
+
+    private fun initialize(): String {
+        val params = JsonObject().apply {
+            addProperty("protocolVersion", "2024-11-05")
+            add("capabilities", JsonObject())
+            add("clientInfo", JsonObject().apply {
+                addProperty("name", "android-app")
+                addProperty("version", "1.0")
+            })
+        }
+        val request = buildRequest(buildJsonRpc("initialize", 1, params), sessionId = null)
+        return httpClient.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) throw RuntimeException("MCP initialize failed: ${response.code}")
+            response.header("mcp-session-id")
+                ?: throw RuntimeException("No mcp-session-id in initialize response")
+        }
+    }
+
+    private fun doToolCall(name: String, args: JsonObject): String {
+        val params = JsonObject().apply {
+            addProperty("name", name)
+            add("arguments", args)
+        }
+        val raw = postMcp(buildJsonRpc("tools/call", 3, params))
+        return parseSseData(raw)
+            .getAsJsonObject("result")
+            ?.getAsJsonArray("content")
+            ?.asSequence()
+            ?.map { it.asJsonObject }
+            ?.filter { it.get("type")?.asString == "text" }
+            ?.mapNotNull { it.get("text")?.asString }
+            ?.joinToString("\n")
+            ?.ifEmpty { "Пустой ответ от MCP-инструмента" }
+            ?: "Пустой ответ от MCP-инструмента"
+    }
+
+    private fun postMcp(payload: JsonObject): String {
+        val sid = sessionId ?: throw RuntimeException("No active MCP session")
+        return httpClient.newCall(buildRequest(payload, sid)).execute().use { response ->
+            if (response.code == 400) throw SessionExpiredException()
+            if (!response.isSuccessful) throw RuntimeException("MCP request failed: ${response.code}")
+            response.body?.string() ?: throw RuntimeException("Empty MCP response body")
+        }
+    }
+
+    private fun buildRequest(payload: JsonObject, sessionId: String?) =
+        Request.Builder()
+            .url(MCP_URL)
+            .post(gson.toJson(payload).toRequestBody(JSON_MEDIA_TYPE))
+            .addHeader("Accept", "application/json, text/event-stream")
+            .apply { sessionId?.let { addHeader("mcp-session-id", it) } }
+            .build()
+
+    private fun buildJsonRpc(method: String, id: Int, params: JsonObject) = JsonObject().apply {
+        addProperty("jsonrpc", "2.0")
+        addProperty("method", method)
+        addProperty("id", id)
+        add("params", params)
+    }
+
+    private fun parseSseData(raw: String): JsonObject {
+        val data = raw.lines().firstOrNull { it.startsWith("data: ") }
+            ?: throw RuntimeException("No SSE data line in response")
+        return gson.fromJson(data.removePrefix("data: "), JsonObject::class.java)
+    }
+
+    private fun convertMcpTool(json: JsonObject): Tool? {
+        val name = json.get("name")?.asString ?: return null
+        val description = json.get("description")?.asString ?: ""
+        val parameters = json.getAsJsonObject("inputSchema") ?: JsonObject().apply {
+            addProperty("type", "object")
+        }
+        return Tool(function = ToolFunction(name = name, description = description, parameters = parameters))
+    }
+
+    private class SessionExpiredException : Exception()
+}

@@ -25,13 +25,13 @@ import javax.inject.Singleton
  *
  * @param llmService Provider-agnostic LLM service (DeepSeek by default, swappable via DI).
  * @param providerConfig Model list, context limit, and per-model pricing for cost calculation.
- * @param toolExecutor Executor for weather, currency, and web-search tool calls.
+ * @param toolRegistry Aggregates local and MCP tools; routes tool call execution.
  */
 @Singleton
 class SimpleAgent @Inject constructor(
     private val llmService: LlmService,
     private val providerConfig: LlmProviderConfig,
-    private val toolExecutor: ToolExecutor
+    private val toolRegistry: ToolRegistry
 ) {
 
     /**
@@ -190,7 +190,7 @@ class SimpleAgent @Inject constructor(
                     val toolName = toolCall.function.name
                     Log.d("SimpleAgent", "Tool: $toolName args=${toolCall.function.arguments}")
                     onToolCall?.invoke(toolDisplayName(toolName))
-                    val result = toolExecutor.execute(toolCall)
+                    val result = toolRegistry.execute(toolCall)
                     history.add(Message(role = "tool", content = result, toolCallId = toolCall.id, name = toolName))
                 }
             } else {
@@ -216,7 +216,7 @@ class SimpleAgent @Inject constructor(
     }
 
     /** Builds the [LlmRequest] from current [config], [history], and [strategy]. */
-    private fun buildLlmRequest(): LlmRequest {
+    private suspend fun buildLlmRequest(): LlmRequest {
         val strategyMessages = strategy.buildMessages(history)
         val messages = buildList {
             guardrailsInstruction?.let { add(Message(role = "system", content = it)) }
@@ -228,7 +228,7 @@ class SimpleAgent @Inject constructor(
             messages        = messages,
             maxTokens       = config.maxTokens,
             temperature     = config.temperature,
-            tools           = if (!config.thinkingEnabled) ToolDefinitions.allTools else null,
+            tools           = if (!config.thinkingEnabled) toolRegistry.allTools() else null,
             toolChoice      = if (!config.thinkingEnabled) "auto" else null,
             thinkingEnabled = config.thinkingEnabled,
             reasoningEffort = config.reasoningEffort

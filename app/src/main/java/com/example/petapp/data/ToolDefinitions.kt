@@ -64,8 +64,8 @@ object ToolDefinitions {
         )
     )
 
-    /** All available tools passed to the API in a single request. */
-    val allTools = listOf(weatherTool, currencyTool, searchTool)
+    /** Local tools executed inside the app. MCP tools are fetched dynamically via McpClient. */
+    val localTools = listOf(weatherTool, currencyTool, searchTool)
 
     private fun prop(type: String, description: String) = JsonObject().apply {
         addProperty("type", type)
