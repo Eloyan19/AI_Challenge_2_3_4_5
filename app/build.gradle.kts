@@ -17,6 +17,7 @@ if (localPropertiesFile.exists()) {
 val deepseekApiKey   = localProperties.getProperty("DEEPSEEK_API_KEY")   ?: ""
 val yandexSearchUser = localProperties.getProperty("YANDEX_SEARCH_USER") ?: ""
 val yandexSearchKey  = localProperties.getProperty("YANDEX_SEARCH_KEY")  ?: ""
+val mcpApiKey        = localProperties.getProperty("MCP_API_KEY")        ?: ""
 
 android {
     namespace = "com.example.petapp"
@@ -35,6 +36,7 @@ android {
         buildConfigField("String", "DEEPSEEK_API_KEY",    "\"$deepseekApiKey\"")
         buildConfigField("String", "YANDEX_SEARCH_USER", "\"$yandexSearchUser\"")
         buildConfigField("String", "YANDEX_SEARCH_KEY",  "\"$yandexSearchKey\"")
+        buildConfigField("String", "MCP_API_KEY",        "\"$mcpApiKey\"")
     }
 
     buildTypes {

@@ -142,6 +142,7 @@ class McpClient @Inject constructor(
             .url(MCP_URL)
             .post(gson.toJson(payload).toRequestBody(JSON_MEDIA_TYPE))
             .addHeader("Accept", "application/json, text/event-stream")
+            .addHeader("Authorization", "Bearer ${com.example.petapp.BuildConfig.MCP_API_KEY}")
             .apply { sessionId?.let { addHeader("mcp-session-id", it) } }
             .build()
 
