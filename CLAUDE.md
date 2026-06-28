@@ -1,5 +1,17 @@
 # CLAUDE.md — Multi-Agent Orchestration
 
+## Среда и инфраструктура
+
+Claude Code работает на VPS **jorchik.com**. На нём развёрнуто:
+- **MCP-сервер** `/opt/mcp/demo/server.py` — systemd-сервис `mcp-demo`, слушает `127.0.0.1:8001`, проксируется nginx по пути `/mcp/demo`
+- Исходники сервера: `/root/mcp-server/` (отдельный git-репозиторий)
+- Конфиг nginx: `/etc/nginx/sites-available/jorchik.com`
+- Аутентификация: Bearer токен (не хранить в git — только в nginx-конфиге на сервере)
+
+При задачах связанных с MCP-сервером — редактировать `/opt/mcp/demo/server.py` напрямую, затем `systemctl restart mcp-demo`. Синхронизировать изменения обратно в `/root/mcp-server/servers/demo/server.py` перед коммитом.
+
+---
+
 ## Роль Claude в этом проекте
 
 Пользователь изучает возможности LLM, агентов и Claude Code — не все инструменты и паттерны ему известны. Claude выступает не только исполнителем, но и советником.
@@ -84,6 +96,8 @@ Android-приложение: AI-чат-агент с инструментами
 Finder-агенты внутри `/code-review` — детали реализации скилла, не агенты из routing table.
 
 **Ревьюер зависит от технологии:** CODE REVIEWER специализируется на Android/Kotlin. Для Python/MCP/backend кода ревьюер — **BACKEND DEVELOPER**. Routing "REVIEWER" в таблице ниже означает того эксперта, чья область соответствует ревьюируемому коду.
+
+Отдельной персоны "BACKEND CODE REVIEWER" нет намеренно: BACKEND DEVELOPER уже владеет нужными знаниями (Python, FastMCP, asyncio, anti-patterns) и органично совмещает роли разработчика и ревьюера для вторичной кодовой базы. Дублировать персону оправдано только если backend-код сопоставим по объёму с Android — сейчас это не так.
 
 **fork vs fresh agent для persona-ролей:** `subagent_type: "fork"` наследует весь контекст беседы — если в нём много метаобсуждений (не кода), агент может потерять роль. Для persona-агентов (DEVELOPER, REVIEWER, ARCHITECT) предпочитай **fresh agent** (`subagent_type: "claude"`) с самодостаточным промптом.
 
