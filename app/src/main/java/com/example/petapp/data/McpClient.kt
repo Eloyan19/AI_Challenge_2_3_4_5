@@ -13,10 +13,6 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
-import javax.inject.Inject
-import javax.inject.Named
-import javax.inject.Singleton
-
 class McpClient(
     private val httpClient: OkHttpClient,
     private val gson: Gson,
