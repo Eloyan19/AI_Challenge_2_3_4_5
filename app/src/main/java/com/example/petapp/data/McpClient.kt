@@ -17,13 +17,12 @@ import javax.inject.Inject
 import javax.inject.Named
 import javax.inject.Singleton
 
-@Singleton
-class McpClient @Inject constructor(
-    @Named("base") private val httpClient: OkHttpClient,
-    private val gson: Gson
+class McpClient(
+    private val httpClient: OkHttpClient,
+    private val gson: Gson,
+    private val mcpUrl: String
 ) {
     companion object {
-        private const val MCP_URL = "https://jorchik.com/mcp/demo"
         private const val TAG = "McpClient"
         private const val CACHE_TTL_MS = 5 * 60 * 1000L
         private val JSON_MEDIA_TYPE = "application/json".toMediaType()
@@ -139,7 +138,7 @@ class McpClient @Inject constructor(
 
     private fun buildRequest(payload: JsonObject, sessionId: String?) =
         Request.Builder()
-            .url(MCP_URL)
+            .url(mcpUrl)
             .post(gson.toJson(payload).toRequestBody(JSON_MEDIA_TYPE))
             .addHeader("Accept", "application/json, text/event-stream")
             .addHeader("Authorization", "Bearer ${com.example.petapp.BuildConfig.MCP_API_KEY}")

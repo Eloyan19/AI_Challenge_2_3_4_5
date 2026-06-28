@@ -7,19 +7,20 @@ import com.google.gson.JsonObject
 import javax.inject.Inject
 import javax.inject.Singleton
 
+
 @Singleton
 class ToolRegistry @Inject constructor(
-    private val mcpClient: McpClient,
+    private val mcpServerManager: McpServerManager,
     private val toolExecutor: ToolExecutor,
     private val gson: Gson
 ) {
     suspend fun allTools(): List<Tool> =
-        ToolDefinitions.localTools + mcpClient.listTools()
+        ToolDefinitions.localTools + mcpServerManager.allTools()
 
     suspend fun execute(toolCall: ToolCall): String =
-        if (mcpClient.ownsToolName(toolCall.function.name)) {
+        if (mcpServerManager.ownsToolName(toolCall.function.name)) {
             val args = gson.fromJson(toolCall.function.arguments, JsonObject::class.java)
-            mcpClient.callTool(toolCall.function.name, args)
+            mcpServerManager.callTool(toolCall.function.name, args)
         } else {
             toolExecutor.execute(toolCall)
         }
